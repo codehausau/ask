@@ -13,10 +13,37 @@
 # while you type the actual prompt.
 
 # Kept in sync with src/options.ts by test/completion.test.ts.
-_ASK_FLAGS="--api-key --base-url --dry-run --file --help --include-secrets --json \
---max-file-bytes --max-files --max-tokens --max-total-bytes --model --quiet \
---show-context --system --system-file --temperature --token-field --version \
--V -f -h -m -q -s"
+_ASK_FLAGS="--all-matches --api-key --base-url --dry-run --file --help \
+--include-secrets --json --max-file-bytes --max-files --max-tokens \
+--max-total-bytes --model --quiet --show-context --system --system-file \
+--temperature --token-field --version -V -f -h -m -q -s"
+
+# Most candidates offered for a recursive search, to keep TAB responsive.
+_ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
+
+# Recursive search, mirroring what `ask` itself does when @needle is not a path.
+# Case-insensitive substring match on the path; git-aware when available.
+_ask_search() {
+  local needle=$1 prefix=$2 item
+  local -a found=()
+
+  if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    mapfile -t found < <(
+      git ls-files --cached --others --exclude-standard 2> /dev/null |
+        grep -iF -- "$needle" | LC_ALL=C sort | head -n "$_ASK_SEARCH_LIMIT"
+    )
+  else
+    mapfile -t found < <(
+      find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
+        -printf '%P\n' 2> /dev/null |
+        grep -iF -- "$needle" | LC_ALL=C sort | head -n "$_ASK_SEARCH_LIMIT"
+    )
+  fi
+
+  for item in "${found[@]}"; do
+    [ -n "$item" ] && COMPREPLY+=("${prefix}${item}")
+  done
+}
 
 # Fill COMPREPLY with path matches for $1, each prefixed with $2.
 _ask_paths() {
@@ -72,6 +99,12 @@ _ask_complete() {
   case $cur in
     @*)
       _ask_paths "${cur#@}" "@"
+      # Nothing matched as a prefix, so fall back to a tree search — the same
+      # thing `ask @needle` does. Only for bare names: a partial path like
+      # `@src/` is already unambiguous.
+      if [ ${#COMPREPLY[@]} -eq 0 ] && [ -n "${cur#@}" ] && [[ ${cur#@} != */* ]]; then
+        _ask_search "${cur#@}" "@"
+      fi
       ;;
     -*)
       mapfile -t COMPREPLY < <(compgen -W "$_ASK_FLAGS" -- "$cur")

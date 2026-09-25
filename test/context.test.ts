@@ -131,11 +131,11 @@ test("unset limits fall back to defaults instead of NaN caps", async () => {
   assert.equal(result.totalBytes, 20);
 });
 
-test("missing path is a hard error", async () => {
+test("a reference matching nothing at all is a hard error", async () => {
   const root = await fixture();
   await assert.rejects(
     () => collectContext(["nope.ts"], { cwd: root }),
-    /context path not found: nope\.ts/,
+    /no such path, and nothing in the tree matched @nope\.ts/,
   );
 });
 

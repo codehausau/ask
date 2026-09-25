@@ -15,6 +15,7 @@ export const OPTIONS = {
   "max-file-bytes": { type: "string" },
   "max-total-bytes": { type: "string" },
   "max-files": { type: "string" },
+  "all-matches": { type: "boolean" },
   "include-secrets": { type: "boolean" },
   "show-context": { type: "boolean" },
   "dry-run": { type: "boolean" },

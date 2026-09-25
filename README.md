@@ -92,6 +92,7 @@ $ ask @src/chat.ts review this for me
 | You type | You get |
 | --- | --- |
 | `@<TAB>` | everything in the current directory; directories gain a `/` so you can keep descending |
+| `@buried<TAB>` | when nothing matches as a prefix, a recursive tree search — the same fallback the CLI performs, git-aware when available |
 | `-<TAB>` / `--max-t<TAB>` | flags |
 | `--token-field <TAB>` | `max_tokens`, `max_completion_tokens` |
 | `-m <TAB>` | models listed in `$ASK_MODELS`, if you export it |
@@ -132,9 +133,45 @@ git diff --staged | ask 'review this diff'          # stdin
 ask '@docs/cot.md is this CoT taxonomy consistent?' > review.md
 ```
 
-`@path` tokens are pulled out of the prompt; everything else stays as the
+`@ref` tokens are pulled out of the prompt; everything else stays as the
 question. Attachments are rendered as `<file path="...">…</file>` blocks ahead of
 the question, in sorted order, so the same tree always yields the same prompt.
+
+### How `@ref` resolves
+
+Three cases, tried in order, so the cheap and unambiguous ones win:
+
+| You write | Meaning |
+| --- | --- |
+| `@src/chat.ts`, `@src` | **path** — it exists on disk, used verbatim, no searching |
+| `@'src/**/*.ts'` | **glob** — `*` and `?` stay within a path segment, `**` crosses them. Quote it, or the shell expands it first |
+| `@chat` | **search** — ranked substring search over the tree |
+
+Search ranks candidates so the obvious answer wins: exact basename, then
+basename without extension, then basename prefix, then basename substring, then
+path substring; ties break on shortest path. `@chat` in this repo picks
+`src/chat.ts` over `test/chat.test.ts`.
+
+```console
+$ ask --show-context '@chat'
+match   @chat → src/chat.ts [search]
+attach  src/chat.ts  4.6 KB
+```
+
+A search that ties at the best rank is an error, not a guess:
+
+```console
+$ ask '@dup summarise'
+ask: @dup matches 2 paths equally well
+      a/dup.ts
+      b/dup.ts
+      name one of them, use a glob, or pass --all-matches
+```
+
+Search only ever offers files that would actually be attached — the skip rules
+below apply to the search index too, so `node_modules`, binaries, lockfiles and
+credential-looking files are never matched. Every non-literal resolution is
+printed to stderr before the request goes out, so you always know what was sent.
 
 ### Options
 
@@ -148,6 +185,7 @@ the question, in sorted order, so the same tree always yields the same prompt.
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
+| `--all-matches` | attach every search match instead of the single best one |
 | `--include-secrets` | stop skipping `.env`, `*.pem`, key-ish files |
 | `--show-context` | list attachments and exit |
 | `--dry-run` | print the request JSON and exit |
@@ -155,7 +193,8 @@ the question, in sorted order, so the same tree always yields the same prompt.
 | `-q, --quiet` | drop the stderr footer |
 | `-V, --version` | print the version |
 
-Exit codes: `0` ok, `1` runtime/API error, `2` usage error.
+Exit codes: `0` ok, `1` runtime/API error, `2` usage error or an `@ref` that
+matched nothing / matched ambiguously.
 
 `api.openai.com` gets `max_completion_tokens` (newer models reject
 `max_tokens`); every other base URL gets `max_tokens`. Override with
@@ -178,7 +217,9 @@ dropped silently. The footer prints the real token usage returned by the API.
 ## Layout and development
 
 ```
-src/context.ts        @path → sorted, filtered, capped text blocks (pure, offline)
+src/refs.ts           @ref → paths: exact path, glob, or ranked search
+src/skip.ts           skip rules shared by attachment and search
+src/context.ts        resolved paths → sorted, filtered, capped text blocks
 src/chat.ts           request builder + one-shot transport (no tools by construction)
 src/options.ts        the flag table, shared with the completion test
 src/cli.ts            flags, stdin, .env, output modes

@@ -18,9 +18,10 @@ const HARNESS = path.join(REPO_ROOT, "test", "completion-harness.sh");
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ask-comp-"));
-  await mkdir(path.join(root, "src"));
+  await mkdir(path.join(root, "src", "deep"), { recursive: true });
   await writeFile(path.join(root, "src", "a.ts"), "");
   await writeFile(path.join(root, "src", "b.ts"), "");
+  await writeFile(path.join(root, "src", "deep", "buried.ts"), "");
   await writeFile(path.join(root, "notes.md"), "");
   return root;
 }
@@ -39,13 +40,30 @@ test("@ completes paths and keeps the @ prefix", async () => {
 
 test("@ completes inside a directory", async () => {
   const cwd = await fixture();
-  assert.deepEqual(await complete(cwd, 1, "ask", "@src/"), ["@src/a.ts", "@src/b.ts"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "@src/"), [
+    "@src/a.ts",
+    "@src/b.ts",
+    "@src/deep/",
+  ]);
   assert.deepEqual(await complete(cwd, 1, "ask", "@src/a"), ["@src/a.ts"]);
 });
 
 test("a bare @ offers everything in the current directory", async () => {
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", "@"), ["@notes.md", "@src/"]);
+});
+
+test("a name that is not a prefix falls back to a tree search", async () => {
+  const cwd = await fixture();
+  // "buried" matches nothing in the current directory, so search takes over —
+  // the same fallback `ask @buried` performs.
+  assert.deepEqual(await complete(cwd, 1, "ask", "@buried"), ["@src/deep/buried.ts"]);
+});
+
+test("a partial path is not searched, only prefix-completed", async () => {
+  const cwd = await fixture();
+  assert.deepEqual(await complete(cwd, 1, "ask", "@src/deep/"), ["@src/deep/buried.ts"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "@src/nothinghere"), []);
 });
 
 test("flags complete on a leading dash", async () => {

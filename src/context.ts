@@ -1,10 +1,18 @@
-// Context collection: turn `@path` references into deterministic text blocks.
+// Context collection: turn `@ref` references into deterministic text blocks.
 //
 // Pure and offline: no network, no writes. Directory walks are sorted, so the
 // same tree always produces byte-identical prompt text.
+//
+// Reference resolution (exact path, glob, or search) lives in refs.ts; this
+// module turns resolved paths into capped, filtered blocks.
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+
+import { resolveRef, type Resolution } from "./refs.ts";
+import { isProbablyBinary, isSecretPath, LOCKFILES, SKIP_DIRS, SKIP_EXTENSIONS } from "./skip.ts";
+
+export { SKIP_DIRS, SKIP_EXTENSIONS } from "./skip.ts";
 
 export interface Limits {
   /** Per-file cap; larger files are included truncated with a marker. */
@@ -44,6 +52,8 @@ export interface SkippedEntry {
 export interface ContextResult {
   readonly blocks: readonly ContextBlock[];
   readonly skipped: readonly SkippedEntry[];
+  /** How each `@ref` was resolved: verbatim path, glob, or search. */
+  readonly resolutions: readonly Resolution[];
   readonly totalBytes: number;
   readonly truncated: boolean;
 }
@@ -51,6 +61,8 @@ export interface ContextResult {
 export interface CollectOptions {
   readonly cwd?: string;
   readonly includeSecrets?: boolean;
+  /** Attach every search match instead of erroring on ties. */
+  readonly allMatches?: boolean;
   readonly limits?: LimitOverrides;
 }
 
@@ -64,57 +76,6 @@ export const DEFAULT_LIMITS: Limits = {
   maxTotalBytes: 1024 * 1024,
   maxFiles: 200,
 };
-
-/** Directories never walked: VCS internals, dependencies, build output. */
-export const SKIP_DIRS: ReadonlySet<string> = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  "node_modules",
-  ".pnpm-store",
-  "dist",
-  "build",
-  "out",
-  "target",
-  "coverage",
-  ".next",
-  ".nuxt",
-  ".turbo",
-  ".gradle",
-  ".idea",
-  ".venv",
-  "__pycache__",
-  ".terraform",
-]);
-
-/** Extensions treated as non-text and skipped during directory walks. */
-export const SKIP_EXTENSIONS: ReadonlySet<string> = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svgz",
-  ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
-  ".mp3", ".mp4", ".mov", ".avi", ".wav", ".ogg", ".webm",
-  ".woff", ".woff2", ".ttf", ".otf", ".eot",
-  ".so", ".dylib", ".dll", ".exe", ".bin", ".class", ".jar", ".apk", ".aab",
-  ".pyc", ".wasm", ".db", ".sqlite", ".keystore",
-]);
-
-/** Files that usually hold credentials. Skipped unless explicitly allowed. */
-const SECRET_PATTERNS: readonly RegExp[] = [
-  /(^|[/\\])\.env(\.|$)/i,
-  /(^|[/\\])(id_rsa|id_dsa|id_ecdsa|id_ed25519)$/,
-  /\.(pem|key|p12|pfx|jks|ppk)$/i,
-  /(^|[/\\])(credentials|secrets?)\.(json|ya?ml|toml|ini)$/i,
-];
-
-/** Lockfiles: large, near-zero review value. */
-const LOCKFILES: ReadonlySet<string> = new Set([
-  "pnpm-lock.yaml",
-  "package-lock.json",
-  "yarn.lock",
-  "Cargo.lock",
-  "poetry.lock",
-  "Gemfile.lock",
-  "composer.lock",
-]);
 
 /**
  * Merge caller limits over the defaults, ignoring `undefined` and non-positive
@@ -133,7 +94,7 @@ export function resolveLimits(overrides: LimitOverrides = {}): Limits {
 }
 
 /**
- * Split a prompt into `@path` references and the remaining question text.
+ * Split a prompt into `@ref` references and the remaining question text.
  * A bare `@` stays in the question.
  */
 export function extractRefs(prompt: string | undefined): ExtractedPrompt {
@@ -148,15 +109,6 @@ export function extractRefs(prompt: string | undefined): ExtractedPrompt {
     }
   }
   return { refs, question: words.join(" ") };
-}
-
-function isSecretPath(relPath: string): boolean {
-  return SECRET_PATTERNS.some((pattern) => pattern.test(relPath));
-}
-
-function isProbablyBinary(buffer: Buffer): boolean {
-  // A NUL byte in the first chunk is the classic, cheap heuristic.
-  return buffer.subarray(0, 8000).includes(0);
 }
 
 interface WalkState {
@@ -202,9 +154,10 @@ async function walk(dir: string, state: WalkState): Promise<void> {
 }
 
 /**
- * Read every referenced file (expanding directories) into ordered text blocks.
- * Missing paths reject; everything else degrades to a `skipped` entry so the
- * caller can report exactly what was and was not sent.
+ * Resolve every reference, expand directories, and read the result into ordered
+ * text blocks. A reference that matches nothing (or several things equally
+ * well) rejects with a RefResolutionError; everything else degrades to a
+ * `skipped` entry so the caller can report exactly what was and was not sent.
  */
 export async function collectContext(
   refs: readonly string[],
@@ -216,16 +169,27 @@ export async function collectContext(
 
   const candidates: string[] = [];
   const skipped: SkippedEntry[] = [];
+  const resolutions: Resolution[] = [];
 
   for (const ref of refs) {
-    const absolute = path.resolve(cwd, ref);
-    const info = await stat(absolute).catch(() => {
-      throw new Error(`context path not found: ${ref}`);
+    const resolution = await resolveRef(ref, {
+      cwd,
+      includeSecrets,
+      allMatches: options.allMatches ?? false,
     });
+    resolutions.push(resolution);
 
-    if (info.isDirectory()) {
-      await walk(absolute, { cwd, limits, includeSecrets, found: candidates, skipped });
-    } else if (info.isFile()) {
+    for (const absolute of resolution.paths) {
+      const info = await stat(absolute);
+
+      if (info.isDirectory()) {
+        await walk(absolute, { cwd, limits, includeSecrets, found: candidates, skipped });
+        continue;
+      }
+      if (!info.isFile()) {
+        skipped.push({ path: path.relative(cwd, absolute), reason: "not-a-regular-file" });
+        continue;
+      }
       // Explicit file references bypass extension and lockfile filters, but
       // never silently ship credentials.
       const relative = path.relative(cwd, absolute);
@@ -234,8 +198,6 @@ export async function collectContext(
       } else {
         candidates.push(absolute);
       }
-    } else {
-      skipped.push({ path: ref, reason: "not-a-regular-file" });
     }
   }
 
@@ -267,7 +229,7 @@ export async function collectContext(
     totalBytes += Math.min(buffer.byteLength, room);
   }
 
-  return { blocks, skipped, totalBytes, truncated };
+  return { blocks, skipped, resolutions, totalBytes, truncated };
 }
 
 /** Assemble the single user message: context blocks first, question last. */

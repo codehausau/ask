@@ -23,18 +23,25 @@ import {
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { OPTIONS } from "./options.ts";
+import { RefResolutionError } from "./refs.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const USAGE = `ask — one-shot LLM question with file/directory context
 
 Usage
-  ask [options] '<prompt with @file or @dir references>'
+  ask [options] '<prompt with @file, @dir, @glob or @search references>'
   <command> | ask [options] '<prompt>'
+
+References
+  @src/context.ts   an exact path (file or directory)
+  @context          searched for in the tree: best-ranked match wins
+  @'src/**/*.ts'    a glob (quote it so the shell does not expand it first)
 
 Examples
   ask '@src/context.ts review this file for me'
   ask '@src explain the control flow, then list risks'
+  ask '@chat what does this module do?'        # resolves to src/chat.ts
   ask -f 'path with spaces.ts' 'any bugs?'
   git diff --staged | ask 'review this diff for regressions'
   ask --show-context '@src' 'summarise'        # list attachments, no API call
@@ -52,6 +59,7 @@ Options
       --max-file-bytes <n>  per-file cap before truncation (default 262144)
       --max-total-bytes <n> total context cap (default 1048576)
       --max-files <n>       max files from directory walks (default 200)
+      --all-matches         attach every search match instead of the best one
       --include-secrets     do not skip .env / *.pem / key-ish files
       --show-context        print what would be attached, then exit
       --dry-run             print the request JSON, then exit
@@ -120,7 +128,28 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Report references that were not literal paths, so it is always obvious which
+ * file a search or glob actually picked.
+ */
+function resolutionNotes(context: ContextResult, cwd: string): string[] {
+  const notes: string[] = [];
+  for (const resolution of context.resolutions) {
+    if (resolution.kind === "path") continue;
+    const shown = resolution.paths
+      .slice(0, 3)
+      .map((absolute) => path.relative(cwd, absolute))
+      .join(", ");
+    const more = resolution.paths.length > 3 ? ` (+${resolution.paths.length - 3} more)` : "";
+    notes.push(`@${resolution.ref} → ${shown}${more} [${resolution.kind}]`);
+  }
+  return notes;
+}
+
 function printContext(context: ContextResult): void {
+  for (const note of resolutionNotes(context, process.cwd())) {
+    process.stdout.write(`match   ${note}\n`);
+  }
   for (const block of context.blocks) {
     const note = block.truncated ? "  (truncated)" : "";
     process.stdout.write(`attach  ${block.path}  ${formatBytes(block.bytes)}${note}\n`);
@@ -170,6 +199,7 @@ async function main(argv: string[]): Promise<number> {
 
   const context = await collectContext(allRefs, {
     includeSecrets: bool("include-secrets"),
+    allMatches: bool("all-matches"),
     limits: {
       maxFileBytes: numberOption(flag("max-file-bytes"), "max-file-bytes"),
       maxTotalBytes: numberOption(flag("max-total-bytes"), "max-total-bytes"),
@@ -180,6 +210,13 @@ async function main(argv: string[]): Promise<number> {
   if (bool("show-context")) {
     printContext(context);
     return 0;
+  }
+
+  // Say which file a search or glob picked before spending tokens on it.
+  if (!bool("quiet") && !bool("json")) {
+    for (const note of resolutionNotes(context, process.cwd())) {
+      process.stderr.write(`-- ${note}\n`);
+    }
   }
 
   const systemFile = flag("system-file");
@@ -221,6 +258,11 @@ async function main(argv: string[]): Promise<number> {
             files: context.blocks.map((block) => block.path),
             bytes: context.totalBytes,
             skipped: context.skipped,
+            resolutions: context.resolutions.map((resolution) => ({
+              ref: resolution.ref,
+              kind: resolution.kind,
+              paths: resolution.paths.map((absolute) => path.relative(process.cwd(), absolute)),
+            })),
           },
         },
         null,
@@ -251,7 +293,19 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  if (error instanceof UsageError) {
+  if (error instanceof RefResolutionError) {
+    process.stderr.write(`ask: ${error.message}\n`);
+    for (const candidate of error.candidates.slice(0, 10)) {
+      process.stderr.write(`      ${candidate}\n`);
+    }
+    if (error.candidates.length > 10) {
+      process.stderr.write(`      ... and ${error.candidates.length - 10} more\n`);
+    }
+    if (error.candidates.length > 0) {
+      process.stderr.write("      name one of them, use a glob, or pass --all-matches\n");
+    }
+    process.exitCode = 2;
+  } else if (error instanceof UsageError) {
     process.stderr.write(`ask: ${error.message}\n\n${USAGE}`);
     process.exitCode = 2;
   } else {
