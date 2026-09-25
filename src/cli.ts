@@ -22,6 +22,7 @@ import {
   type TokenField,
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
+import { OPTIONS } from "./options.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,28 +60,6 @@ Options
   -V, --version             print the version
   -h, --help                this help
 `;
-
-const OPTIONS = {
-  model: { type: "string", short: "m" },
-  system: { type: "string", short: "s" },
-  "system-file": { type: "string" },
-  "base-url": { type: "string" },
-  "api-key": { type: "string" },
-  file: { type: "string", short: "f", multiple: true },
-  "max-tokens": { type: "string" },
-  temperature: { type: "string" },
-  "token-field": { type: "string" },
-  "max-file-bytes": { type: "string" },
-  "max-total-bytes": { type: "string" },
-  "max-files": { type: "string" },
-  "include-secrets": { type: "boolean" },
-  "show-context": { type: "boolean" },
-  "dry-run": { type: "boolean" },
-  json: { type: "boolean" },
-  quiet: { type: "boolean", short: "q" },
-  version: { type: "boolean", short: "V" },
-  help: { type: "boolean", short: "h" },
-} as const;
 
 class UsageError extends Error {}
 

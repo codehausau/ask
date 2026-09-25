@@ -22,6 +22,7 @@
   "packageManager": "pnpm@10.11.0",
   "files": [
     "dist/src",
+    "completions",
     "README.md",
     "SECURITY.md"
   ],

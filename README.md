@@ -76,6 +76,52 @@ Against a real endpoint:
 ask -q '@README.md summarise this in one sentence'
 ```
 
+## Tab completion
+
+```bash
+echo "source $PWD/completions/ask.bash" >> ~/.bashrc && exec bash
+```
+
+Then `@` completes paths, keeping the prefix:
+
+```console
+$ ask @src/ch<TAB>
+$ ask @src/chat.ts review this for me
+```
+
+| You type | You get |
+| --- | --- |
+| `@<TAB>` | everything in the current directory; directories gain a `/` so you can keep descending |
+| `-<TAB>` / `--max-t<TAB>` | flags |
+| `--token-field <TAB>` | `max_tokens`, `max_completion_tokens` |
+| `-m <TAB>` | models listed in `$ASK_MODELS`, if you export it |
+| `-f <TAB>`, `--system-file <TAB>` | plain paths, no `@` |
+| anything else | nothing — TAB stays out of the way while you type the question |
+
+Quote only the parts the shell would eat, so completion keeps working:
+
+```bash
+ask @src/chat.ts review this file            # no quotes needed
+ask @src/chat.ts 'any bugs?'                 # quote the ? only
+```
+
+zsh, using bash's completion bridge:
+
+```bash
+autoload -U +X bashcompinit && bashcompinit
+source /path/to/ask/completions/ask.bash
+```
+
+### Fuzzy picking
+
+Sourcing the same file also defines `askf` when [fzf](https://github.com/junegunn/fzf)
+is installed — the nearest equivalent to an editor's `@` mention search. TAB
+selects several files, then the question is passed through:
+
+```console
+$ askf review these for consistency
+```
+
 ## Usage
 
 ```bash
@@ -132,11 +178,17 @@ dropped silently. The footer prints the real token usage returned by the API.
 ## Layout and development
 
 ```
-src/context.ts   @path → sorted, filtered, capped text blocks (pure, offline)
-src/chat.ts      request builder + one-shot transport (no tools by construction)
-src/cli.ts       flags, stdin, .env, output modes
-test/            node:test, no network, no key required
+src/context.ts        @path → sorted, filtered, capped text blocks (pure, offline)
+src/chat.ts           request builder + one-shot transport (no tools by construction)
+src/options.ts        the flag table, shared with the completion test
+src/cli.ts            flags, stdin, .env, output modes
+completions/ask.bash  bash/zsh completion + optional fzf picker
+test/                 node:test, no network, no key required
 ```
+
+`test/completion.test.ts` drives the completion function through a bash harness
+and asserts its flag list matches `src/options.ts`, so adding a flag without
+updating the completion script fails CI.
 
 Strict TypeScript (`strict`, `noUncheckedIndexedAccess`,
 `exactOptionalPropertyTypes`, `verbatimModuleSyntax`). Relative imports are
@@ -161,7 +213,7 @@ npm deps and those SHA pins current.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | push, PR | `tsc --noEmit`; tests on Node 20/22/24; `--dry-run` / `--show-context` (no key, no egress); packs the tarball, installs it globally and runs `ask --version` |
+| [`ci.yml`](.github/workflows/ci.yml) | push, PR | `tsc --noEmit`; shellcheck on the completion script; tests on Node 20/22/24; `--dry-run` / `--show-context` (no key, no egress); packs the tarball, installs it globally and runs `ask --version` |
 | [`security.yml`](.github/workflows/security.yml) | push, PR, weekly | `pnpm audit` (runtime blocking, dev advisory); dependency review on PRs; Trivy vulns + secrets + misconfig; TruffleHog over full git history; actionlint + zizmor on these workflows; CycloneDX SBOM artifact |
 | [`codeql.yml`](.github/workflows/codeql.yml) | push, PR, weekly | CodeQL `security-extended` for javascript-typescript |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | weekly, branch protection changes | OpenSSF Scorecard (public repos only; guarded by a visibility check) |

@@ -32,6 +32,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # The completion script ships with the tool, so lint it too. shellcheck
+      # is preinstalled on ubuntu-latest runners.
+      - name: shellcheck
+        run: shellcheck -x -s bash completions/ask.bash test/completion-harness.sh
 
   test:
     runs-on: ubuntu-latest
