@@ -1,0 +1,45 @@
+name: codeql
+
+# Static analysis for injection, path traversal, unsafe deserialisation, etc.
+#
+# Requires code scanning: free on public repos, needs GitHub Advanced Security
+# on private ones. If this repo is private without GHAS, delete this file — the
+# blocking Trivy and pnpm audit jobs in security.yml keep working either way.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "45 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@88585263c0627ee42c0e1c5143a112c8d6f4aa18 # v4.38.2
+        with:
+          languages: javascript-typescript
+          # security-extended adds lower-severity and quality-adjacent queries.
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@88585263c0627ee42c0e1c5143a112c8d6f4aa18 # v4.38.2
+        with:
+          category: /language:javascript-typescript

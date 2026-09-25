@@ -1,0 +1,46 @@
+{
+  "name": "@codehaus/ask",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
+  "keywords": ["llm", "cli", "openai", "one-shot", "code-review"],
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/codehausau/ask.git"
+  },
+  "bugs": {
+    "url": "https://github.com/codehausau/ask/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ask": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "files": [
+    "dist/src",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/src/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --test dist/test/*.test.js",
+    "test:dev": "node --experimental-strip-types --test test/*.test.ts",
+    "dev": "node --experimental-strip-types src/cli.ts",
+    "smoke": "pnpm build && node dist/src/cli.js --dry-run '@src/context.ts review this file for me'",
+    "audit": "pnpm audit --audit-level high --prod",
+    "check": "pnpm typecheck && pnpm test && pnpm audit",
+    "ask": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "openai": "^7.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

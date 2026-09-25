@@ -1,0 +1,37 @@
+version: 2
+
+updates:
+  # Runtime and dev dependencies. openai is the only runtime dep, so a PR here
+  # is worth reading rather than auto-merging.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Australia/Brisbane
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      types-and-tooling:
+        patterns:
+          - "@types/*"
+          - typescript
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  # Keeps the SHA pins in .github/workflows fresh — pinning without updates is
+  # how you end up on a two-year-old action.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Australia/Brisbane
+    open-pull-requests-limit: 5
+    labels:
+      - ci
