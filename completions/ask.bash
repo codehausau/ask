@@ -25,7 +25,8 @@
 _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --dry-run --file \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
---max-total-bytes --model --new --no-session --quiet --reset --session \
+--max-total-bytes --model --new --no-color --no-session --quiet --reset \
+--session \
 --session-max-tokens --show-context --show-session --system --system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
 

@@ -284,6 +284,25 @@ and CI logs stay clean; the line is erased before the answer prints. `--quiet`,
 `ASK_SPINNER=ascii` (also used automatically on a non-UTF-8 locale) swaps braille
 for `-\|/`.
 
+### Colour
+
+Status is dimmed, warnings are yellow and errors are red, so the model's answer
+stands out as the only plain text on screen:
+
+```
+⠹ asking qwen2.5-coder:7b… 12.4s          ← dim, stderr
+The answer, in default colour.            ← stdout, never styled
+-- qwen2.5-coder:7b | thread ask turn 2   ← dim, stderr
+```
+
+**The answer itself is never coloured.** It goes to stdout and is routinely
+piped, redirected or pasted, where escape codes cause damage; `ask ... > out.md`
+is byte-for-byte the model's text. Colour applies only to what `ask` says *about*
+the request, and only when the relevant stream is a terminal.
+
+Opt out with `--no-color` or [`NO_COLOR=1`](https://no-color.org); force it on
+for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
+
 `api.openai.com` gets `max_completion_tokens` (newer models reject
 `max_tokens`); every other base URL gets `max_tokens`. Override with
 `--token-field` if your gateway disagrees.

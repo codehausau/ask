@@ -24,6 +24,7 @@ import {
   type TokenField,
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
+import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import { startSpinner } from "./spinner.ts";
@@ -114,6 +115,7 @@ Options
   -V, --version             print the version
   -h, --help                this help
       --install-completion  print the shell setup block (--apply writes it)
+      --no-color            no colour in status output (also NO_COLOR=1)
 `;
 
 class UsageError extends Error {}
@@ -209,17 +211,24 @@ function resolutionNotes(context: ContextResult, cwd: string): string[] {
  */
 function printContext(
   context: ContextResult,
-  extras: { question: string; stdinText: string; system: string; session: Session | null },
+  extras: {
+    question: string;
+    stdinText: string;
+    system: string;
+    session: Session | null;
+    palette: Palette;
+  },
 ): void {
+  const paint = extras.palette;
   for (const note of resolutionNotes(context, process.cwd())) {
-    process.stdout.write(`match   ${note}\n`);
+    process.stdout.write(`${paint.cyan("match")}   ${note}\n`);
   }
   for (const block of context.blocks) {
-    const note = block.truncated ? "  (truncated)" : "";
-    process.stdout.write(`attach  ${block.path}  ${formatBytes(block.bytes)}${note}\n`);
+    const note = block.truncated ? paint.yellow("  (truncated)") : "";
+    process.stdout.write(`${paint.bold("attach")}  ${block.path}  ${formatBytes(block.bytes)}${note}\n`);
   }
   for (const item of context.skipped) {
-    process.stdout.write(`skip    ${item.path}  (${item.reason})\n`);
+    process.stdout.write(paint.dim(`skip    ${item.path}  (${item.reason})\n`));
   }
 
   const files = Math.ceil(context.totalBytes / 4);
@@ -230,11 +239,13 @@ function printContext(
 
   process.stdout.write(
     `\n${context.blocks.length} file(s), ${formatBytes(context.totalBytes)}\n\n` +
-      `estimated tokens for the next request\n` +
-      `  files     ~${formatCount(files)}\n` +
-      (extras.session ? `  history   ~${formatCount(history)}\n` : "") +
-      `  question  ~${formatCount(question)}\n` +
-      `  system    ~${formatCount(system)}\n` +
+      `${paint.bold("estimated tokens for the next request")}\n` +
+      paint.dim(
+        `  files     ~${formatCount(files)}\n` +
+          (extras.session ? `  history   ~${formatCount(history)}\n` : "") +
+          `  question  ~${formatCount(question)}\n` +
+          `  system    ~${formatCount(system)}\n`,
+      ) +
       `  total     ~${formatCount(total)}\n`,
   );
 }
@@ -244,9 +255,9 @@ function formatCount(value: number): string {
 }
 
 /** Print a session without calling the API. */
-function printSession(session: Session | null, file: string): void {
+function printSession(session: Session | null, file: string, paint: Palette): void {
   if (!session || session.turns.length === 0) {
-    process.stdout.write(`no active thread\n(would be stored at ${file})\n`);
+    process.stdout.write(`no active thread\n${paint.dim(`(would be stored at ${file})`)}\n`);
     return;
   }
 
@@ -254,12 +265,15 @@ function printSession(session: Session | null, file: string): void {
   const partial = spent.reported < spent.turns ? ` (${spent.reported}/${spent.turns} turns)` : "";
 
   process.stdout.write(
-    `thread ${sessionLabel(session)}  ${session.turns.length} turn(s)\n` +
-      `scope   ${session.scope}\n` +
-      `updated ${session.updatedAt}\n` +
-      `history ~${formatCount(sessionTokens(session))} tokens, resent every turn\n` +
-      `spent   ${formatCount(spent.input)} in / ${formatCount(spent.output)} out${partial}\n` +
-      `file    ${file}\n\n`,
+    `${paint.bold(`thread ${sessionLabel(session)}`)}  ${session.turns.length} turn(s)\n` +
+      paint.dim(
+        `scope   ${session.scope}\n` +
+          `updated ${session.updatedAt}\n` +
+          `history ~${formatCount(sessionTokens(session))} tokens, resent every turn\n` +
+          `spent   ${formatCount(spent.input)} in / ${formatCount(spent.output)} out${partial}\n` +
+          `file    ${file}\n`,
+      ) +
+      "\n",
   );
 
   let total = 0;
@@ -271,20 +285,22 @@ function printSession(session: Session | null, file: string): void {
     if (turn.summary) {
       // Shown as a summary, not as a question and answer that never happened.
       process.stdout.write(
-        `${index + 1}. summary of ${turn.covers ?? "?"} earlier turn(s)${refs}\n` +
-          `   ${answer.length > 300 ? `${answer.slice(0, 300)}…` : answer}\n`,
+        `${index + 1}. ${paint.cyan("summary")} of ${turn.covers ?? "?"} earlier turn(s)${paint.dim(refs)}\n` +
+          `   ${paint.dim(answer.length > 300 ? `${answer.slice(0, 300)}…` : answer)}\n`,
       );
       return;
     }
     process.stdout.write(
-      `${index + 1}. you: ${turn.question}${refs}\n` +
-        `   llm: ${answer.length > 160 ? `${answer.slice(0, 160)}…` : answer}\n`,
+      `${index + 1}. ${paint.bold("you")}: ${turn.question}${paint.dim(refs)}\n` +
+        `   ${paint.cyan("llm")}: ${paint.dim(answer.length > 160 ? `${answer.slice(0, 160)}…` : answer)}\n`,
     );
   });
 
   process.stdout.write(
-    `\n~${total} tokens of question-and-answer text; ` +
-      `file contents are re-read fresh each turn\n`,
+    paint.dim(
+      `\n~${total} tokens of question-and-answer text; ` +
+        `file contents are re-read fresh each turn\n`,
+    ),
   );
 }
 
@@ -309,9 +325,10 @@ async function findCompletionScript(): Promise<string | null> {
 async function installCompletion(apply: boolean): Promise<number> {
   const script = await findCompletionScript();
   if (!script) {
+    const palette = createPalette(supportsColour(process.stderr));
     process.stderr.write(
-      "ask: cannot find completions/ask.bash next to this install\n" +
-        "     (a packaged copy ships in the tarball; clone the repo if it is missing)\n",
+      `${palette.red("ask: cannot find completions/ask.bash next to this install")}\n` +
+        `${palette.dim("     (a packaged copy ships in the tarball; clone the repo if it is missing)")}\n`,
     );
     return 1;
   }
@@ -344,6 +361,15 @@ async function installCompletion(apply: boolean): Promise<number> {
   return 0;
 }
 
+/** Status goes to stderr, dimmed; the answer on stdout stays untouched. */
+function statusWriter(palette: Palette) {
+  return {
+    note: (line: string): void => void process.stderr.write(`${palette.dim(line)}\n`),
+    warn: (line: string): void => void process.stderr.write(`${palette.yellow(line)}\n`),
+    blank: (): void => void process.stderr.write("\n"),
+  };
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Record<string, unknown>;
   let positionals: string[];
@@ -364,6 +390,11 @@ async function main(argv: string[]): Promise<number> {
 
   const flag = (name: string): string | undefined => values[name] as string | undefined;
   const bool = (name: string): boolean => values[name] === true;
+
+  const colour = bool("no-color")
+    ? NO_COLOUR
+    : createPalette(supportsColour(process.stderr));
+  const status = statusWriter(colour);
 
   if (bool("help")) {
     process.stdout.write(USAGE);
@@ -400,15 +431,17 @@ async function main(argv: string[]): Promise<number> {
   if (bool("new")) {
     const removed = await resetSession(sessionKey);
     if (!bool("quiet")) {
-      process.stderr.write(
-        removed ? "-- started a new thread\n" : "-- no thread to clear; starting fresh\n",
-      );
+      status.note(removed ? "-- started a new thread" : "-- no thread to clear; starting fresh");
     }
   }
 
   if (bool("show-session")) {
     const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
-    printSession(existing, sessionPath(sessionKey));
+    printSession(
+      existing,
+      sessionPath(sessionKey),
+      bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout)),
+    );
     return 0;
   }
 
@@ -450,6 +483,7 @@ async function main(argv: string[]): Promise<number> {
     const compactSpinner = startSpinner({
       label: `compacting ${existing.turns.length} turn(s)`,
       stream: process.stderr,
+      style: colour.dim,
       ...(bool("quiet") ? { enabled: false } : {}),
     });
     let summary: Awaited<ReturnType<typeof askOnce>>;
@@ -467,17 +501,19 @@ async function main(argv: string[]): Promise<number> {
     const after = sessionTokens(compacted);
     process.stdout.write(`${summary.text}\n`);
     if (!bool("quiet")) {
-      process.stderr.write(
-        `\n-- compacted ${existing.turns.length} turn(s): ` +
-          `~${before} → ~${after} tokens of history\n` +
-          `-- ${compacted.turns[0]?.refs.length ?? 0} file(s) stay attached; ` +
-          `previous thread kept at ${backup}\n`,
+      status.blank();
+      status.note(
+        `-- compacted ${existing.turns.length} turn(s): ~${before} → ~${after} tokens of history`,
+      );
+      status.note(
+        `-- ${compacted.turns[0]?.refs.length ?? 0} file(s) stay attached; ` +
+          `previous thread kept at ${backup}`,
       );
       if (after >= before) {
         // Short threads cost more to summarise than to keep verbatim.
-        process.stderr.write(
+        status.warn(
           "-- note: the summary is no smaller than the thread it replaced; " +
-            "/compact pays off on long threads (restore with the file above)\n",
+            "/compact pays off on long threads (restore with the file above)",
         );
       }
     }
@@ -502,7 +538,7 @@ async function main(argv: string[]): Promise<number> {
       await resolveRef(ref, { cwd: process.cwd() });
       carried.push(ref);
     } catch {
-      if (!bool("quiet")) process.stderr.write(`-- dropped @${ref} from the thread (no longer resolves)\n`);
+      if (!bool("quiet")) status.note(`-- dropped @${ref} from the thread (no longer resolves)`);
     }
   }
   const allRefs = [...carried, ...turnRefs];
@@ -523,14 +559,20 @@ async function main(argv: string[]): Promise<number> {
     : (flag("system") ?? process.env["ASK_SYSTEM"] ?? DEFAULT_SYSTEM);
 
   if (bool("show-context")) {
-    printContext(context, { question, stdinText, system, session });
+    printContext(context, {
+      question,
+      stdinText,
+      system,
+      session,
+      palette: bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout)),
+    });
     return 0;
   }
 
   // Say which file a search or glob picked before spending tokens on it.
   if (!bool("quiet") && !bool("json")) {
     for (const note of resolutionNotes(context, process.cwd())) {
-      process.stderr.write(`-- ${note}\n`);
+      status.note(`-- ${note}`);
     }
   }
 
@@ -546,9 +588,7 @@ async function main(argv: string[]): Promise<number> {
     const pruned = pruneSession(session, budget, estimateTokens(prompt));
     history = pruned.session;
     if (pruned.dropped > 0 && !bool("quiet")) {
-      process.stderr.write(
-        `-- pruned ${pruned.dropped} old turn(s) to stay under ${budget} tokens\n`,
-      );
+      status.note(`-- pruned ${pruned.dropped} old turn(s) to stay under ${budget} tokens`);
     }
   }
 
@@ -586,6 +626,7 @@ async function main(argv: string[]): Promise<number> {
   const spinner = startSpinner({
     label: `asking ${request.model}`,
     stream: process.stderr,
+    style: colour.dim,
     ...(bool("quiet") ? { enabled: false } : {}),
   });
 
@@ -645,25 +686,26 @@ async function main(argv: string[]): Promise<number> {
   if (!bool("quiet")) {
     // Implicit state must be visible: say which thread and which turn.
     const thread = saved ? `thread ${sessionLabel(saved)} turn ${saved.turns.length} | ` : "";
-    process.stderr.write(
-      `\n-- ${result.model} | ${thread}${context.blocks.length} file(s) ` +
+    status.blank();
+    status.note(
+      `-- ${result.model} | ${thread}${context.blocks.length} file(s) ` +
         `${formatBytes(context.totalBytes)} | tokens in ${result.usage.input ?? "?"} ` +
-        `out ${result.usage.output ?? "?"}\n`,
+        `out ${result.usage.output ?? "?"}`,
     );
     if (saved && saved.turns.length > 1) {
       // Implicit context compounds, so show what the thread has cost so far.
       const spent = sessionUsage(saved);
-      process.stderr.write(
+      status.note(
         `-- thread total: ${formatCount(spent.input)} in / ` +
           `${formatCount(spent.output)} out over ${spent.turns} turns ` +
-          `(~${formatCount(sessionTokens(saved))} history resent next turn)\n`,
+          `(~${formatCount(sessionTokens(saved))} history resent next turn)`,
       );
     }
     if (result.finishReason === "length") {
-      process.stderr.write("-- warning: answer hit the token cap (--max-tokens)\n");
+      status.warn("-- warning: answer hit the token cap (--max-tokens)");
     }
     if (context.truncated) {
-      process.stderr.write("-- warning: some context was truncated (--show-context to inspect)\n");
+      status.warn("-- warning: some context was truncated (--show-context to inspect)");
     }
   }
   return 0;
@@ -672,30 +714,38 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
+  // The palette is rebuilt here: main() may have thrown before parsing flags.
+  const palette = process.argv.includes("--no-color")
+    ? NO_COLOUR
+    : createPalette(supportsColour(process.stderr));
+  const fail = (line: string): void => void process.stderr.write(`${palette.red(line)}\n`);
+  const hint = (line: string): void => void process.stderr.write(`${palette.dim(line)}\n`);
+
   if (error instanceof ConfigError) {
-    process.stderr.write(`ask: ${error.message}\n`);
+    fail(`ask: ${error.message}`);
     process.exitCode = 2;
   } else if (error instanceof RefResolutionError) {
-    process.stderr.write(`ask: ${error.message}\n`);
+    fail(`ask: ${error.message}`);
     for (const candidate of error.candidates.slice(0, 10)) {
-      process.stderr.write(`      ${candidate}\n`);
+      hint(`      ${candidate}`);
     }
     if (error.candidates.length > 10) {
-      process.stderr.write(`      ... and ${error.candidates.length - 10} more\n`);
+      hint(`      ... and ${error.candidates.length - 10} more`);
     }
     if (error.candidates.length > 0) {
-      process.stderr.write("      name one of them, use a glob, or pass --all-matches\n");
+      hint("      name one of them, use a glob, or pass --all-matches");
     }
     process.exitCode = 2;
   } else if (error instanceof UsageError) {
-    process.stderr.write(`ask: ${error.message}\n\n${USAGE}`);
+    fail(`ask: ${error.message}`);
+    process.stderr.write(`\n${USAGE}`);
     process.exitCode = 2;
   } else {
-    const status =
+    const httpStatus =
       error !== null && typeof error === "object" && "status" in error && error.status
         ? ` (HTTP ${String(error.status)})`
         : "";
-    process.stderr.write(`ask: ${error instanceof Error ? error.message : String(error)}${status}\n`);
+    fail(`ask: ${error instanceof Error ? error.message : String(error)}${httpStatus}`);
     process.exitCode = 1;
   }
 }

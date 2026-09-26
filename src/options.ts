@@ -21,6 +21,7 @@ export const OPTIONS = {
   compact: { type: "boolean" },
   "install-completion": { type: "boolean" },
   apply: { type: "boolean" },
+  "no-color": { type: "boolean" },
   reset: { type: "boolean" },
   session: { type: "string" },
   "show-session": { type: "boolean" },

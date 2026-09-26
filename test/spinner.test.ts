@@ -52,6 +52,13 @@ test("a frame clears the line, names the wait and shows elapsed time", () => {
   assert.ok(frame.startsWith("\r\u001b[K"));
 });
 
+test("styling wraps the text but never the erase sequence", () => {
+  const dim = (text: string): string => `\u001b[2m${text}\u001b[0m`;
+  const frame = renderFrame("⠙", "asking", 1000, dim);
+  assert.equal(frame, "\r\u001b[K\u001b[2m⠙ asking… 1.0s\u001b[0m");
+  assert.ok(frame.startsWith("\r\u001b[K"), "erase stays outside the styling");
+});
+
 test("frames advance and elapsed time grows", () => {
   const stream = recorder();
   let clock = 1000;

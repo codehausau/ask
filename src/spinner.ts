@@ -11,6 +11,8 @@ export interface SpinnerStream {
 
 export interface SpinnerOptions {
   readonly label: string;
+  /** Wraps the rendered frame, e.g. to dim it. Defaults to no styling. */
+  readonly style?: (text: string) => string;
   readonly stream?: SpinnerStream;
   /** Overrides the terminal and environment checks. */
   readonly enabled?: boolean;
@@ -57,9 +59,15 @@ export function pickFrames(env: NodeJS.ProcessEnv = process.env): readonly strin
 }
 
 /** One frame of output, e.g. `⠙ asking gpt-4o-mini… 2.4s`. */
-export function renderFrame(frame: string, label: string, elapsedMs: number): string {
+export function renderFrame(
+  frame: string,
+  label: string,
+  elapsedMs: number,
+  style: (text: string) => string = (text) => text,
+): string {
   const seconds = (elapsedMs / 1000).toFixed(1);
-  return `${CLEAR_LINE}${frame} ${label}… ${seconds}s`;
+  // The erase stays outside the styling, so a reset cannot swallow it.
+  return `${CLEAR_LINE}${style(`${frame} ${label}… ${seconds}s`)}`;
 }
 
 /**
@@ -85,7 +93,7 @@ export function startSpinner(options: SpinnerOptions): Spinner {
     if (stopped) return;
     const frame = frames[index % frames.length] ?? "";
     index += 1;
-    stream.write(renderFrame(frame, options.label, now() - started));
+    stream.write(renderFrame(frame, options.label, now() - started, options.style));
   };
 
   tick();
