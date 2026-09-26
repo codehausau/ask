@@ -643,8 +643,14 @@ npm deps and those SHA pins current.
 Run the same gates locally:
 
 ```bash
-pnpm check         # typecheck + tests + runtime audit
+pnpm check           # typecheck + tests + runtime audit
+pnpm lint:workflows  # actionlint + zizmor, as the security workflow runs them
 ```
+
+`lint:workflows` needs `actionlint` and `zizmor` on your `PATH`
+(`pip install zizmor`, and actionlint's `download-actionlint.bash`). Note that
+zizmor fails on **low**-severity findings too, so check it without a
+`--min-severity` filter or you will not see what CI sees.
 
 Two deliberate choices worth knowing about:
 

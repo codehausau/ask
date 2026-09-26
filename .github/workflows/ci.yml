@@ -82,6 +82,9 @@ jobs:
         run: pnpm pack --pack-destination "$RUNNER_TEMP"
       - name: Install the tarball globally and run it
         working-directory: ${{ runner.temp }}
+        # Installing our own freshly packed tarball is the point of this job,
+        # so the lack of a lockfile here is intentional.
+        # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
           tarball=$(ls ./*.tgz)

@@ -60,11 +60,12 @@ jobs:
           pnpm pack --pack-destination dist-release
           echo "tarball=$(ls dist-release/*.tgz)" >> "$GITHUB_OUTPUT"
 
-      # Installing our own freshly built tarball is the point of this step, so
-      # the lack of a lockfile here is intentional.
       - name: Verify the tarball installs and runs
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
+        # Installing our own freshly built tarball is the point of this step, so
+        # the lack of a lockfile here is intentional.
+        # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
           npm install --global "$TARBALL"
