@@ -43,7 +43,7 @@
     "check": "pnpm typecheck && pnpm test && pnpm audit",
     "ask": "node dist/src/cli.js",
     "refresh": "git pull --ff-only && pnpm install --frozen-lockfile && pnpm build && ask --version",
-    "lint:workflows": "actionlint .github/workflows/*.yml && zizmor --persona=regular .github/workflows/"
+    "lint:workflows": "actionlint .github/workflows/*.yml && zizmor --persona=regular .github/"
   },
   "dependencies": {
     "openai": "^7.23.0"

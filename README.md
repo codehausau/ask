@@ -648,9 +648,11 @@ pnpm lint:workflows  # actionlint + zizmor, as the security workflow runs them
 ```
 
 `lint:workflows` needs `actionlint` and `zizmor` on your `PATH`
-(`pip install zizmor`, and actionlint's `download-actionlint.bash`). Note that
-zizmor fails on **low**-severity findings too, so check it without a
-`--min-severity` filter or you will not see what CI sees.
+(`pip install zizmor`, and actionlint's `download-actionlint.bash`). Two things
+that will otherwise hide findings CI does see: zizmor fails on **low**-severity
+findings, so do not filter with `--min-severity`; and it must be pointed at
+**`.github/`**, not `.github/workflows/`, because `dependabot.yml` is audited
+too.
 
 Two deliberate choices worth knowing about:
 
