@@ -167,6 +167,61 @@ _ask_complete() {
 
 complete -F _ask_complete ask
 
+# --- typing `@` opens the picker (opt-in) ----------------------------------
+#
+# Enable with `ASK_AT_KEY=1` before sourcing this file. `@` becomes a readline
+# widget, the same mechanism as fzf's own CTRL-T binding, so it is deliberately
+# conservative: the picker only opens at the start of a word on an `ask`/`askf`
+# command line. Everywhere else — `ssh user@host`, `git@github.com`, any other
+# command — it inserts a literal `@` and gets out of the way.
+
+_ask_insert_at() {
+  local before=$1 after=$2
+  READLINE_LINE="${before}@${after}"
+  READLINE_POINT=$((${#before} + 1))
+}
+
+_ask_at_widget() {
+  local before=${READLINE_LINE:0:READLINE_POINT}
+  local after=${READLINE_LINE:READLINE_POINT}
+  local chosen
+
+  # Not an ask command line: plain `@`.
+  if [[ ! $before =~ ^[[:space:]]*(ask|askf)[[:space:]] ]]; then
+    _ask_insert_at "$before" "$after"
+    return 0
+  fi
+  # Mid-word (user@host, name@2x.png): plain `@`.
+  if [[ $before =~ [^[:space:]]$ ]]; then
+    _ask_insert_at "$before" "$after"
+    return 0
+  fi
+  # No picker available: plain `@`, and TAB still completes.
+  if ! _ask_use_fzf; then
+    _ask_insert_at "$before" "$after"
+    return 0
+  fi
+
+  chosen=$(
+    _ask_all_paths | fzf --height=40% --reverse --border \
+      --prompt='ask @ ' --info=inline 2> /dev/tty
+  ) || chosen=""
+
+  if [ -n "$chosen" ]; then
+    # Trailing space so the question can be typed straight after.
+    READLINE_LINE="${before}@${chosen} ${after}"
+    READLINE_POINT=$((${#before} + ${#chosen} + 2))
+  else
+    # Cancelled: behave as if `@` had simply been typed.
+    _ask_insert_at "$before" "$after"
+  fi
+}
+
+if [[ $- == *i* ]] && [ "${ASK_AT_KEY-0}" = "1" ]; then
+  bind -x '"@": _ask_at_widget' 2> /dev/null
+  bind -m vi-insert -x '"@": _ask_at_widget' 2> /dev/null
+fi
+
 # Optional multi-file picker: `askf <question>` opens fzf, TAB selects several
 # files, and the question is passed through. Defined only if fzf is installed.
 if command -v fzf > /dev/null 2>&1; then

@@ -138,6 +138,70 @@ test("the picker and the plain fallback draw from the same candidate list", asyn
   );
 });
 
+/**
+ * Drive the `@` readline widget: returns the line and cursor position after
+ * typing `@` at `point`. ASK_FZF=0 keeps it on the non-interactive path.
+ */
+async function atWidget(
+  cwd: string,
+  line: string,
+  point: number,
+): Promise<{ line: string; point: number }> {
+  const script = [
+    `source ${COMPLETION}`,
+    `READLINE_LINE=${JSON.stringify(line)}`,
+    `READLINE_POINT=${point}`,
+    "_ask_at_widget",
+    'printf "%s\\n%s\\n" "$READLINE_LINE" "$READLINE_POINT"',
+  ].join("; ");
+
+  const { stdout } = await run("bash", ["-c", script], {
+    cwd,
+    env: { ...process.env, ASK_FZF: "0" },
+  });
+  const [text = "", position = "0"] = stdout.split("\n");
+  return { line: text, point: Number(position) };
+}
+
+test("typing @ elsewhere inserts a literal @, never a picker", async () => {
+  const cwd = await fixture();
+
+  // The case that must not break: an ssh host on some unrelated command line.
+  assert.deepEqual(await atWidget(cwd, "ssh user", 8), { line: "ssh user@", point: 9 });
+  // Mid-line, cursor not at the end.
+  assert.deepEqual(await atWidget(cwd, "ssh host", 3), { line: "ssh@ host", point: 4 });
+  // An empty line.
+  assert.deepEqual(await atWidget(cwd, "", 0), { line: "@", point: 1 });
+  // A command that merely starts with the letters "ask".
+  assert.deepEqual(await atWidget(cwd, "askew foo", 9), { line: "askew foo@", point: 10 });
+});
+
+test("typing @ mid-word on an ask line is still a literal @", async () => {
+  const cwd = await fixture();
+  assert.deepEqual(await atWidget(cwd, "ask src", 7), { line: "ask src@", point: 8 });
+  assert.deepEqual(await atWidget(cwd, "ask name", 8), { line: "ask name@", point: 9 });
+});
+
+test("with no picker available, @ on an ask line degrades to a literal @", async () => {
+  const cwd = await fixture();
+  // ASK_FZF=0 in the helper: TAB completion still works, nothing is lost.
+  assert.deepEqual(await atWidget(cwd, "ask ", 4), { line: "ask @", point: 5 });
+  assert.deepEqual(await atWidget(cwd, "askf ", 5), { line: "askf @", point: 6 });
+  assert.deepEqual(await atWidget(cwd, "ask @a.ts ", 10), { line: "ask @a.ts @", point: 11 });
+});
+
+test("the @ binding is opt-in", async () => {
+  const cwd = await fixture();
+  // Non-interactive shells never bind, and ASK_AT_KEY defaults to off, so
+  // sourcing the file cannot silently rebind @ for the whole shell.
+  const { stdout } = await run(
+    "bash",
+    ["-c", `source ${COMPLETION}; bind -X 2>/dev/null | grep -c '"@"' || true`],
+    { cwd },
+  );
+  assert.equal(stdout.trim(), "0");
+});
+
 test("the completion script lists exactly the flags the CLI accepts", async () => {
   const script = await readFile(COMPLETION, "utf8");
   const match = /^_ASK_FLAGS="([\s\S]*?)"$/m.exec(script);

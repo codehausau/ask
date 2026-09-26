@@ -114,6 +114,30 @@ TAB then inserts the first candidate and cycles forward, Shift-TAB backwards.
 
 Set `ASK_FZF=0` to force plain completion even when fzf is installed.
 
+### Opening the picker without TAB
+
+`ASK_AT_KEY=1` makes typing `@` open the picker immediately — no TAB:
+
+```bash
+export ASK_AT_KEY=1
+source /path/to/ask/completions/ask.bash
+```
+
+`@` becomes a readline widget, the same mechanism as fzf's own `CTRL-T`, so it
+is deliberately narrow. The picker opens **only** at the start of a word on an
+`ask` or `askf` command line; everywhere else `@` inserts a literal `@`:
+
+| You type | What happens |
+| --- | --- |
+| `ask @` | picker opens, selection inserted as `@path ` |
+| `ask @a.ts @` | picker opens again for a second file |
+| `ssh user@host` | literal `@` — any other command is untouched |
+| `ask name@2x.png` | literal `@` — mid-word, so not a reference |
+| picker cancelled (ESC) | literal `@`, as if you had just typed it |
+
+Without fzf, or with `ASK_FZF=0`, `@` stays literal and TAB completion still
+works. Set `ASK_AT_KEY=0` (or drop the export) to unbind.
+
 Either way, `@` keeps its prefix:
 
 ```console
