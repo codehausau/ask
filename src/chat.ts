@@ -39,7 +39,8 @@ export interface ChatClient {
 export type TokenField = "max_tokens" | "max_completion_tokens";
 
 export interface ClientOptions {
-  readonly apiKey: string | undefined;
+  /** Optional only for loopback endpoints, which ignore it. */
+  apiKey: string | undefined;
   readonly baseURL?: string | undefined;
   readonly timeoutMs?: number;
   readonly maxRetries?: number;
@@ -62,12 +63,36 @@ export interface AskResult {
   readonly usage: { readonly input: number | null; readonly output: number | null };
 }
 
+/**
+ * Local servers (Ollama, llama.cpp, LM Studio, vLLM on localhost) ignore the
+ * Authorization header, but the SDK insists on something being set. Treat a
+ * loopback endpoint as key-free rather than making people invent a dummy value.
+ */
+export function isLoopbackEndpoint(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    const { hostname } = new URL(baseURL);
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "[::1]" ||
+      hostname === "::1" ||
+      hostname.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createClient({
   apiKey,
   baseURL,
   timeoutMs = 120_000,
   maxRetries = 2,
 }: ClientOptions): ChatClient {
+  if (!apiKey && isLoopbackEndpoint(baseURL)) {
+    apiKey = "local";
+  }
   if (!apiKey) {
     throw new Error("no API key: set OPENAI_API_KEY (or pass --api-key)");
   }

@@ -263,6 +263,41 @@ matched nothing / matched ambiguously.
 `max_tokens`); every other base URL gets `max_tokens`. Override with
 `--token-field` if your gateway disagrees.
 
+## Local models (Ollama, llama.cpp, LM Studio, vLLM)
+
+Any OpenAI-compatible endpoint works. For Ollama:
+
+```bash
+ollama serve
+ollama pull qwen2.5-coder:7b
+
+export OPENAI_BASE_URL=http://localhost:11434/v1
+export ASK_MODEL=qwen2.5-coder:7b
+ask '@src/chat.ts review this file for me'
+```
+
+No API key is needed — a loopback `OPENAI_BASE_URL` (`localhost`, `127.0.0.1`,
+`[::1]`) skips the key requirement, since local servers ignore the
+`Authorization` header. A remote endpoint still requires one.
+
+Two things are handled for you: the request carries `max_tokens` rather than
+`max_completion_tokens` (Ollama rejects the latter), and nothing tool-related is
+ever sent, so models without tool support are unaffected.
+
+> **Mind the context window.** Ollama defaults to a small `num_ctx` (2–4k
+> tokens) and **silently truncates** anything longer — a 20 KB file becomes a
+> confidently wrong answer. Check the size before you send it with
+> `ask --show-context '@src'`, and raise the window:
+>
+> ```bash
+> OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+> ```
+>
+> Or bake it into a model: `ollama create mymodel -f Modelfile` with
+> `PARAMETER num_ctx 32768`. `ask`'s own caps (256 KB per file, 1 MB total) are
+> far larger than a typical local window, so lower them with
+> `--max-total-bytes` when working locally.
+
 ## What gets attached from a directory
 
 Walks are sorted and filtered so a `@src` reference stays cheap and predictable:

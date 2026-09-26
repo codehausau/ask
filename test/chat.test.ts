@@ -5,6 +5,8 @@ import type { ChatCompletion } from "openai/resources/chat/completions";
 import {
   askOnce,
   buildRequest,
+  createClient,
+  isLoopbackEndpoint,
   tokenLimitField,
   type ChatClient,
   type OneShotRequest,
@@ -83,6 +85,29 @@ test("token limit field follows the endpoint", () => {
   assert.equal(tokenLimitField("https://openrouter.ai/api/v1"), "max_tokens");
   assert.equal(tokenLimitField("not a url"), "max_tokens");
   assert.equal(tokenLimitField("https://api.openai.com/v1", "max_tokens"), "max_tokens");
+});
+
+test("loopback endpoints are recognised", () => {
+  assert.equal(isLoopbackEndpoint("http://localhost:11434/v1"), true);
+  assert.equal(isLoopbackEndpoint("http://127.0.0.1:11434/v1"), true);
+  assert.equal(isLoopbackEndpoint("http://[::1]:8080/v1"), true);
+  assert.equal(isLoopbackEndpoint("http://ollama.localhost/v1"), true);
+  assert.equal(isLoopbackEndpoint("https://api.openai.com/v1"), false);
+  assert.equal(isLoopbackEndpoint("https://ollama.example.com/v1"), false);
+  assert.equal(isLoopbackEndpoint(undefined), false);
+  assert.equal(isLoopbackEndpoint("not a url"), false);
+});
+
+test("a local endpoint needs no API key, a remote one still does", () => {
+  // Ollama and friends ignore the Authorization header.
+  assert.doesNotThrow(() =>
+    createClient({ apiKey: undefined, baseURL: "http://localhost:11434/v1" }),
+  );
+  assert.throws(
+    () => createClient({ apiKey: undefined, baseURL: "https://api.openai.com/v1" }),
+    /no API key/,
+  );
+  assert.throws(() => createClient({ apiKey: undefined }), /no API key/);
 });
 
 test("empty prompt is rejected before any request", () => {
