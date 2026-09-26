@@ -445,7 +445,7 @@ test("ASK_SESSION names a thread, and /switch is rejected without a name", async
     const output = await runCli(["/session"], { ...base, env: { ASK_SESSION: "envthread" } });
     assert.match(output, /thread envthread\s+1 turn\(s\)/);
 
-    await assert.rejects(() => runCli(["/switch"], base), /needs a name/);
+    await assert.rejects(() => runCli(["/switch"], base), /needs a thread name/);
     await assert.rejects(() => runCli(["/switch", "bad name"], base), /invalid thread name|needs a name/);
   } finally {
     await endpoint.close();

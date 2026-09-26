@@ -531,12 +531,17 @@ async function main(argv: string[]): Promise<number> {
   const firstPositional = positionals[0];
   if (firstPositional !== undefined && firstPositional in VERBS) {
     const target = VERBS[firstPositional]!;
-    if (VERBS_WITH_VALUE.has(firstPositional)) {
-      const value = positionals[1];
-      if (value === undefined || value.startsWith("@")) {
-        throw new UsageError(`${firstPositional} needs a name, e.g. ${firstPositional} review`);
+    const expects = VERBS_WITH_VALUE.get(firstPositional);
+    if (expects) {
+      const raw = positionals[1];
+      if (raw === undefined || raw.length === 0) {
+        throw new UsageError(
+          `${firstPositional} needs ${expects.noun}, e.g. ask ${expects.example}`,
+        );
       }
-      values[target] = value;
+      // `@path` is how files are named everywhere else, so accept it here too
+      // rather than making the sigil a syntax error.
+      values[target] = expects.isPath && raw.startsWith("@") ? raw.slice(1) : raw;
       positionals = positionals.slice(2);
     } else {
       values[target] = true;

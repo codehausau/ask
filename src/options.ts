@@ -62,11 +62,23 @@ export const VERBS: Readonly<Record<string, string>> = {
 };
 
 /** Verbs that consume the next positional as their value, e.g. `/switch docs`. */
-export const VERBS_WITH_VALUE: ReadonlySet<string> = new Set([
-  "/switch",
-  "/create",
-  "/write",
-  "/diff",
+export interface VerbValue {
+  /** What the value is, for error messages. */
+  readonly noun: string;
+  readonly example: string;
+  /** True when the value is a path, so a leading `@` is accepted and stripped. */
+  readonly isPath: boolean;
+}
+
+/** Verbs that consume the next positional as their value. */
+export const VERBS_WITH_VALUE: ReadonlyMap<string, VerbValue> = new Map([
+  ["/switch", { noun: "a thread name", example: "/switch review", isPath: false }],
+  [
+    "/create",
+    { noun: "a path", example: "/create test/env.test.ts 'write tests'", isPath: true },
+  ],
+  ["/write", { noun: "a path", example: "/write src/chat.ts 'add a docstring'", isPath: true }],
+  ["/diff", { noun: "a path", example: "/diff src/chat.ts 'add a docstring'", isPath: true }],
 ]);
 
 /** Every accepted flag spelling, e.g. `--model` and `-m`. */

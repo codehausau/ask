@@ -402,3 +402,45 @@ test("a question about a file gets no write suggestion", async () => {
     await endpoint.close();
   }
 });
+
+test("a path may be written with the @ sigil, as everywhere else", async () => {
+  const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
+  const { cwd, state } = await repo();
+  try {
+    // `@` is how files are named in every other position, so /write @path must
+    // not be a syntax error.
+    const run = await runCli(["/write", "@widget.ts", "bump it"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /value = 2/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("a missing verb value names what it wanted", async () => {
+  const endpoint = await stub(() => ({ content: "unused" }));
+  const { cwd, state } = await repo();
+  try {
+    // Each verb explains its own value rather than borrowing another's wording.
+    // runCli here reports the exit code rather than throwing.
+    const write = await runCli(["/write"], { cwd, state, url: endpoint.url });
+    assert.equal(write.code, 2);
+    assert.match(write.stderr, /\/write needs a path, e\.g\. ask \/write src\/chat\.ts/);
+
+    const diff = await runCli(["/diff"], { cwd, state, url: endpoint.url });
+    assert.equal(diff.code, 2);
+    assert.match(diff.stderr, /\/diff needs a path/);
+
+    const create = await runCli(["/create"], { cwd, state, url: endpoint.url });
+    assert.equal(create.code, 2);
+    assert.match(create.stderr, /\/create needs a path/);
+
+    assert.equal(endpoint.count(), 0, "no tokens spent on a usage error");
+  } finally {
+    await endpoint.close();
+  }
+});
