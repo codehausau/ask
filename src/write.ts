@@ -212,3 +212,40 @@ export function checkCreateResponse(proposed: string, finishReason: string | nul
   }
   return problems;
 }
+
+/**
+ * Imperatives that mean "change this file" rather than "tell me about it".
+ * Used only to suggest /write; never to trigger it.
+ */
+const EDIT_VERBS = [
+  "add", "append", "change", "convert", "correct", "delete", "document",
+  "extract", "fix", "implement", "improve", "inline", "insert", "make",
+  "modernise", "modernize", "move", "refactor", "remove", "rename", "reorder",
+  "replace", "rewrite", "simplify", "sort", "split", "tidy", "update", "wrap",
+];
+
+/**
+ * Does this question read like an instruction to edit the file?
+ *
+ * Deliberately shallow: it only decides whether to *mention* `/write` after the
+ * answer. Inferring the intent and writing would reintroduce the failure mode
+ * that naming the target was meant to remove — editing a file you did not say
+ * to edit.
+ */
+export function looksLikeEdit(question: string): boolean {
+  const words = question
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((word) => word.length > 0);
+  if (words.length === 0) return false;
+
+  // Only the opening of the request counts: "add a function" is an instruction,
+  // "why did they add a function here" is a query.
+  const opening = words.slice(0, 2);
+  return opening.some((word) => EDIT_VERBS.includes(word));
+}
+
+/** Single-quote a string for a copy-pasteable shell suggestion. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}

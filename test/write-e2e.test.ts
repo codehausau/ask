@@ -364,3 +364,41 @@ test("/create refuses a response truncated by the token cap", async () => {
     await endpoint.close();
   }
 });
+
+test("an edit instruction without /write suggests it, and writes nothing", async () => {
+  const endpoint = await stub(() => ({ content: "export const value = 2;\n" }));
+  const { cwd, state } = await repo();
+  try {
+    const run = await runCli(["@widget.ts add another constant"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(run.stderr, /nothing was written/);
+    assert.match(run.stderr, /ask \/write 'widget\.ts' 'add another constant'/);
+    // The suggestion is a suggestion: the file is untouched.
+    assert.equal(await readFile(path.join(cwd, "widget.ts"), "utf8"), ORIGINAL);
+    // And the answer still goes to stdout as normal.
+    assert.match(run.stdout, /export const value = 2;/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("a question about a file gets no write suggestion", async () => {
+  const endpoint = await stub(() => ({ content: "It exports one constant." }));
+  const { cwd, state } = await repo();
+  try {
+    const run = await runCli(["@widget.ts what does this do?"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(run.stderr.includes("nothing was written"), false);
+  } finally {
+    await endpoint.close();
+  }
+});

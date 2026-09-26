@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  looksLikeEdit,
+  shellQuote,
   checkCreateRequest,
   checkCreateResponse,
   CREATE_SYSTEM,
@@ -173,4 +175,48 @@ test("the create system prompt asks it to match the supplied context", () => {
   assert.match(CREATE_SYSTEM, /one new source file/);
   assert.match(CREATE_SYSTEM, /no markdown code fence/);
   assert.match(CREATE_SYSTEM, /Match\s+the conventions of any files supplied as context/);
+});
+
+test("an opening imperative reads as an edit instruction", () => {
+  for (const question of [
+    "add another function",
+    "Add a docstring to tokenLimitField",
+    "fix the off-by-one",
+    "please refactor this into two functions",
+    "now update the comment",
+    "sort these keys",
+    "rename value to count",
+  ]) {
+    assert.equal(looksLikeEdit(question), true, question);
+  }
+});
+
+test("a question about the file is not an edit instruction", () => {
+  for (const question of [
+    "why does this return 1",
+    "what does this do?",
+    "review this file for me",
+    "explain the control flow",
+    "is this thread safe",
+    "which function should I add tests for",
+    "does anything here need fixing",
+    "",
+  ]) {
+    assert.equal(looksLikeEdit(question), false, question);
+  }
+});
+
+test("only the opening of the request counts", () => {
+  // The verb appears late, describing rather than instructing.
+  assert.equal(looksLikeEdit("why did they add a function here"), false);
+  assert.equal(looksLikeEdit("explain how I would refactor this"), false);
+  // ...and early, instructing.
+  assert.equal(looksLikeEdit("also add a function"), true);
+});
+
+test("suggestions are safely quoted for a shell", () => {
+  assert.equal(shellQuote("simple"), "'simple'");
+  assert.equal(shellQuote("name with spaces.md"), "'name with spaces.md'");
+  // A quote in the question must not break out of the suggestion.
+  assert.equal(shellQuote("don't break"), `'don'\\''t break'`);
 });

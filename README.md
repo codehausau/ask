@@ -362,6 +362,22 @@ for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
 
 ## Editing a file
 
+**`@` attaches, it does not edit.** `ask '@test.ts add another function'` answers
+in the terminal and leaves the file alone — so when the request reads like an
+instruction, the footer points at the verb that would apply it:
+
+```console
+$ ask '@test.ts add another function'
+...the answer...
+-- nothing was written. To apply an answer like this to the file:
+--   ask /write 'test.ts' 'add another function'
+--   ask /diff  ... to preview it first
+```
+
+That is a suggestion, never an inference. Treating "mentions a file, sounds like
+an instruction" as permission to overwrite is the failure this design is built to
+avoid; naming the target is what makes the intent unambiguous.
+
 `/write <path>` replaces that file with the model's answer, and `/diff <path>`
 previews the change without touching anything (`--write` and `--diff` are the
 flag aliases). **The target is named, never inferred** — the file is attached

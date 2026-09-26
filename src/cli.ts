@@ -45,6 +45,8 @@ import {
   CREATE_SYSTEM,
   checkWriteTargetContext,
   checkWriteTargetPath,
+  looksLikeEdit,
+  shellQuote,
   checkWriteResponse,
   stripCodeFence,
   summariseChange,
@@ -1106,6 +1108,18 @@ async function main(argv: string[]): Promise<number> {
 
   // In write mode the answer is the file itself; it is on disk, not stdout.
   if (writeSummary === null) process.stdout.write(`${result.text}\n`);
+
+  // An edit instruction with one file attached, but no /write: say how to apply
+  // it. Suggesting is the whole of it — inferring the intent and writing would
+  // undo the point of naming the target.
+  if (writeSummary === null && !bool("quiet") && !bool("json")) {
+    const only = context.blocks.length === 1 ? context.blocks[0]?.path : undefined;
+    if (only !== undefined && looksLikeEdit(question)) {
+      status.note("-- nothing was written. To apply an answer like this to the file:");
+      status.note(`--   ask /write ${shellQuote(only)} ${shellQuote(question)}`);
+      status.note("--   ask /diff  ... to preview it first");
+    }
+  }
 
   if (!bool("quiet")) {
     // Implicit state must be visible: say which thread and which turn.
