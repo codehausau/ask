@@ -26,6 +26,7 @@ import {
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
+import { startSpinner } from "./spinner.ts";
 import { OPTIONS, VERBS } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
@@ -446,7 +447,17 @@ async function main(argv: string[]): Promise<number> {
       apiKey: flag("api-key") ?? process.env["OPENAI_API_KEY"],
       baseURL: compactBaseURL,
     });
-    const summary = await askOnce(compactClient, compactRequest);
+    const compactSpinner = startSpinner({
+      label: `compacting ${existing.turns.length} turn(s)`,
+      stream: process.stderr,
+      ...(bool("quiet") ? { enabled: false } : {}),
+    });
+    let summary: Awaited<ReturnType<typeof askOnce>>;
+    try {
+      summary = await askOnce(compactClient, compactRequest);
+    } finally {
+      compactSpinner.stop();
+    }
 
     // Compaction is lossy, so keep the previous thread recoverable.
     const backup = await backupSession(existing);
@@ -569,7 +580,21 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const client = createClient({ apiKey, baseURL });
-  const result = await askOnce(client, request);
+
+  // A local model can take a while; show progress, but only for a human at a
+  // terminal, and always erase the line afterwards.
+  const spinner = startSpinner({
+    label: `asking ${request.model}`,
+    stream: process.stderr,
+    ...(bool("quiet") ? { enabled: false } : {}),
+  });
+
+  let result: Awaited<ReturnType<typeof askOnce>>;
+  try {
+    result = await askOnce(client, request);
+  } finally {
+    spinner.stop();
+  }
 
   // Record the turn. Only the question, the refs as typed, and the answer —
   // never file contents, which are re-read next turn.

@@ -268,8 +268,21 @@ file does not exist.
 | `-q, --quiet` | drop the stderr footer |
 | `-V, --version` | print the version |
 
-Exit codes: `0` ok, `1` runtime/API error, `2` usage error or an `@ref` that
-matched nothing / matched ambiguously.
+Exit codes: `0` ok, `1` runtime/API error, `2` usage or configuration error, or
+an `@ref` that matched nothing / matched ambiguously.
+
+While a request is in flight a spinner shows the model and elapsed time, which
+matters when a local model takes half a minute:
+
+```
+⠹ asking qwen2.5-coder:7b… 12.4s
+```
+
+It writes to stderr and only animates when stderr is a terminal, so piped output
+and CI logs stay clean; the line is erased before the answer prints. `--quiet`,
+`ASK_SPINNER=0`, `TERM=dumb` or any `CI` variable disables it, and
+`ASK_SPINNER=ascii` (also used automatically on a non-UTF-8 locale) swaps braille
+for `-\|/`.
 
 `api.openai.com` gets `max_completion_tokens` (newer models reject
 `max_tokens`); every other base URL gets `max_tokens`. Override with
