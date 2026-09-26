@@ -76,13 +76,45 @@ Against a real endpoint:
 ask -q '@README.md summarise this in one sentence'
 ```
 
-## Tab completion
+## Tab completion and the `@` picker
 
 ```bash
 echo "source $PWD/completions/ask.bash" >> ~/.bashrc && exec bash
 ```
 
-Then `@` completes paths, keeping the prefix:
+What `@<TAB>` does depends on whether [fzf](https://github.com/junegunn/fzf) is
+installed (`apt-get install fzf`, `brew install fzf`):
+
+**With fzf** — an interactive picker: a highlighted list you move through with
+the arrow keys, keep typing to filter, ENTER to insert, ESC to cancel. Closest
+thing to an editor's `@` mention.
+
+```console
+$ ask @t<TAB>
+  ╭──────────────────────────────╮
+  │ > t                          │
+  │   test/chat.test.ts          │
+  │ > test/completion.test.ts    │   ← arrow keys move the highlight
+  │   src/context.ts             │
+  ╰──────────────────────────────╯
+$ ask @test/completion.test.ts
+```
+
+**Without fzf** — plain bash completion: a unique match completes, several list.
+For cycling behaviour closer to a dropdown, add to `~/.inputrc`:
+
+```
+set show-all-if-ambiguous on
+set menu-complete-display-prefix on
+TAB: menu-complete
+"\e[Z": menu-complete-backward
+```
+
+TAB then inserts the first candidate and cycles forward, Shift-TAB backwards.
+
+Set `ASK_FZF=0` to force plain completion even when fzf is installed.
+
+Either way, `@` keeps its prefix:
 
 ```console
 $ ask @src/ch<TAB>
@@ -91,8 +123,8 @@ $ ask @src/chat.ts review this for me
 
 | You type | You get |
 | --- | --- |
-| `@<TAB>` | everything in the current directory; directories gain a `/` so you can keep descending |
-| `@buried<TAB>` | when nothing matches as a prefix, a recursive tree search — the same fallback the CLI performs, git-aware when available |
+| `@<TAB>` | with fzf, the picker; otherwise everything in the current directory, directories gaining a `/` so you can keep descending |
+| `@buried<TAB>` | plain mode: when nothing matches as a prefix, a recursive tree search — the same fallback the CLI performs, git-aware when available |
 | `-<TAB>` / `--max-t<TAB>` | flags |
 | `--token-field <TAB>` | `max_tokens`, `max_completion_tokens` |
 | `-m <TAB>` | models listed in `$ASK_MODELS`, if you export it |
@@ -113,11 +145,10 @@ autoload -U +X bashcompinit && bashcompinit
 source /path/to/ask/completions/ask.bash
 ```
 
-### Fuzzy picking
+### Picking several files
 
-Sourcing the same file also defines `askf` when [fzf](https://github.com/junegunn/fzf)
-is installed — the nearest equivalent to an editor's `@` mention search. TAB
-selects several files, then the question is passed through:
+Sourcing the same file also defines `askf` when fzf is installed. Same picker,
+but TAB selects multiple files before the question is passed through:
 
 ```console
 $ askf review these for consistency

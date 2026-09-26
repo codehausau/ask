@@ -2,15 +2,24 @@
 #
 #   source /path/to/ask/completions/ask.bash
 #
-# Completes:
-#   @<TAB>            paths, keeping the @ prefix (directories get a trailing /)
-#   -<TAB>            flags
+# @<TAB> behaviour depends on whether fzf is installed:
+#
+#   with fzf     an interactive picker opens: a highlighted list you move
+#                through with the arrow keys (or keep typing to filter),
+#                ENTER inserts the highlighted path, ESC cancels.
+#   without fzf  plain bash completion: one match completes, several list.
+#                Add `bind 'TAB: menu-complete'` to cycle through them.
+#
+# Other completions, both modes:
+#   -<TAB>               flags
 #   --token-field <TAB>  the two valid values
-#   -m <TAB>          models from $ASK_MODELS, if set
+#   -m <TAB>             models from $ASK_MODELS, if set
 #   -f / --system-file   plain paths
 #
 # Nothing is completed for the free-text question, so TAB stays out of the way
 # while you type the actual prompt.
+#
+# Set ASK_FZF=0 to force plain completion even when fzf is installed.
 
 # Kept in sync with src/options.ts by test/completion.test.ts.
 _ASK_FLAGS="--all-matches --api-key --base-url --dry-run --file --help \
@@ -21,28 +30,52 @@ _ASK_FLAGS="--all-matches --api-key --base-url --dry-run --file --help \
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
 
-# Recursive search, mirroring what `ask` itself does when @needle is not a path.
-# Case-insensitive substring match on the path; git-aware when available.
-_ask_search() {
-  local needle=$1 prefix=$2 item
-  local -a found=()
-
+# Candidates for the picker: every tracked/untracked file, git-aware.
+# Directories are included so `@somedir` can attach a whole tree.
+_ask_all_paths() {
   if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    mapfile -t found < <(
-      git ls-files --cached --others --exclude-standard 2> /dev/null |
-        grep -iF -- "$needle" | LC_ALL=C sort | head -n "$_ASK_SEARCH_LIMIT"
-    )
+    git ls-files --cached --others --exclude-standard 2> /dev/null
   else
-    mapfile -t found < <(
-      find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
-        -printf '%P\n' 2> /dev/null |
-        grep -iF -- "$needle" | LC_ALL=C sort | head -n "$_ASK_SEARCH_LIMIT"
-    )
-  fi
+    find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
+      -printf '%P\n' 2> /dev/null
+  fi | LC_ALL=C sort
+}
 
-  for item in "${found[@]}"; do
-    [ -n "$item" ] && COMPREPLY+=("${prefix}${item}")
-  done
+# Recursive substring search, mirroring what `ask` does when @needle is not a
+# path. Prints matches, one per line.
+_ask_search_paths() {
+  local needle=$1
+  _ask_all_paths | grep -iF -- "$needle" | head -n "$_ASK_SEARCH_LIMIT"
+}
+
+# True when an interactive fzf picker should be used. Requires fzf, a terminal
+# to draw on, and no explicit opt-out — the terminal check also keeps the test
+# harness (which captures output through a pipe) on the plain path.
+_ask_use_fzf() {
+  [ "${ASK_FZF-1}" != "0" ] && command -v fzf > /dev/null 2>&1 && [ -t 2 ]
+}
+
+# Open the picker, pre-filtered by $1, and put the chosen path in COMPREPLY
+# with the $2 prefix. Returns non-zero if nothing was chosen.
+_ask_pick() {
+  local query=$1 prefix=$2 chosen
+
+  chosen=$(
+    _ask_all_paths | fzf \
+      --height=40% \
+      --reverse \
+      --query="$query" \
+      --select-1 \
+      --exit-0 \
+      --prompt="ask ${prefix} " \
+      --info=inline \
+      --border 2> /dev/tty
+  ) || return 1
+
+  [ -n "$chosen" ] || return 1
+  COMPREPLY=("${prefix}${chosen}")
+  compopt -o filenames 2> /dev/null
+  return 0
 }
 
 # Fill COMPREPLY with path matches for $1, each prefixed with $2.
@@ -60,11 +93,27 @@ _ask_paths() {
   done < <(compgen -f -- "$partial" | LC_ALL=C sort)
 
   # Let bash escape spaces and other awkward characters in filenames.
-  compopt -o filenames 2>/dev/null
+  compopt -o filenames 2> /dev/null
 
   # A lone directory match: no trailing space, so you can keep descending.
   if [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == */ ]]; then
-    compopt -o nospace 2>/dev/null
+    compopt -o nospace 2> /dev/null
+  fi
+}
+
+# Plain-bash fallback for @refs: prefix completion, then a tree search.
+_ask_paths_or_search() {
+  local partial=$1 prefix=$2 item
+
+  _ask_paths "$partial" "$prefix"
+
+  # Nothing matched as a prefix, so fall back to a tree search — the same
+  # thing `ask @needle` does. Only for bare names: a partial path like
+  # `@src/` is already unambiguous.
+  if [ ${#COMPREPLY[@]} -eq 0 ] && [ -n "$partial" ] && [[ $partial != */* ]]; then
+    while IFS= read -r item; do
+      [ -n "$item" ] && COMPREPLY+=("${prefix}${item}")
+    done < <(_ask_search_paths "$partial")
   fi
 }
 
@@ -77,6 +126,9 @@ _ask_complete() {
   # Value of the flag that precedes the cursor.
   case $prev in
     -f | --file | --system-file)
+      if _ask_use_fzf; then
+        _ask_pick "$cur" "" && return 0
+      fi
       _ask_paths "$cur" ""
       return 0
       ;;
@@ -98,13 +150,13 @@ _ask_complete() {
 
   case $cur in
     @*)
-      _ask_paths "${cur#@}" "@"
-      # Nothing matched as a prefix, so fall back to a tree search — the same
-      # thing `ask @needle` does. Only for bare names: a partial path like
-      # `@src/` is already unambiguous.
-      if [ ${#COMPREPLY[@]} -eq 0 ] && [ -n "${cur#@}" ] && [[ ${cur#@} != */* ]]; then
-        _ask_search "${cur#@}" "@"
+      if _ask_use_fzf; then
+        _ask_pick "${cur#@}" "@" && return 0
+        # Picker cancelled: leave the word untouched.
+        COMPREPLY=("$cur")
+        return 0
       fi
+      _ask_paths_or_search "${cur#@}" "@"
       ;;
     -*)
       mapfile -t COMPREPLY < <(compgen -W "$_ASK_FLAGS" -- "$cur")
@@ -115,19 +167,17 @@ _ask_complete() {
 
 complete -F _ask_complete ask
 
-# Optional fuzzy picker — the closest thing to an editor's @-mention search.
-# Defined only if fzf is installed.
-#
-#   askf review this for me
-#
-# Opens fzf (TAB to select several), then runs ask with the picked paths
-# attached via -f, so filenames containing spaces survive.
+# Optional multi-file picker: `askf <question>` opens fzf, TAB selects several
+# files, and the question is passed through. Defined only if fzf is installed.
 if command -v fzf > /dev/null 2>&1; then
   askf() {
     local -a picked=() args=()
     local item
 
-    mapfile -t picked < <(fzf --multi --height=40% --reverse --prompt='ask @ ')
+    mapfile -t picked < <(
+      _ask_all_paths | fzf --multi --height=40% --reverse --border \
+        --prompt='ask @ ' --info=inline
+    )
     if [ ${#picked[@]} -eq 0 ]; then
       return 1
     fi

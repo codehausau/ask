@@ -108,6 +108,36 @@ test("free-text words and free-form flag values are left alone", async () => {
   assert.deepEqual(await complete(cwd, 2, "ask", "--temperature", "0"), []);
 });
 
+test("the fzf picker is opt-out, and needs both fzf and a terminal", async () => {
+  const cwd = await fixture();
+  const probe = `source ${COMPLETION}; _ask_use_fzf; echo "rc=$?"`;
+
+  // No terminal attached (stderr is a pipe here), so never interactive: this is
+  // what keeps the rest of this suite on the plain-completion path.
+  const piped = await run("bash", ["-c", probe], { cwd });
+  assert.equal(piped.stdout.trim(), "rc=1");
+
+  // Explicit opt-out is honoured regardless.
+  const optOut = await run("bash", ["-c", probe], {
+    cwd,
+    env: { ...process.env, ASK_FZF: "0" },
+  });
+  assert.equal(optOut.stdout.trim(), "rc=1");
+});
+
+test("the picker and the plain fallback draw from the same candidate list", async () => {
+  const cwd = await fixture();
+  const { stdout } = await run(
+    "bash",
+    ["-c", `source ${COMPLETION}; _ask_search_paths buried`],
+    { cwd },
+  );
+  assert.deepEqual(
+    stdout.split("\n").filter((line) => line.length > 0),
+    ["src/deep/buried.ts"],
+  );
+});
+
 test("the completion script lists exactly the flags the CLI accepts", async () => {
   const script = await readFile(COMPLETION, "utf8");
   const match = /^_ASK_FLAGS="([\s\S]*?)"$/m.exec(script);
