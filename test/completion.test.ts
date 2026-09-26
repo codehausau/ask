@@ -78,6 +78,7 @@ test("/verbs complete as the first word only", async () => {
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", "/"), [
     "/compact",
+    "/create",
     "/diff",
     "/new",
     "/reset",
@@ -86,7 +87,8 @@ test("/verbs complete as the first word only", async () => {
     "/switch",
     "/write",
   ]);
-  assert.deepEqual(await complete(cwd, 1, "ask", "/c"), ["/compact"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/c"), ["/compact", "/create"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/cr"), ["/create"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/w"), ["/write"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/d"), ["/diff"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session", "/sessions"]);
@@ -100,6 +102,7 @@ test("an empty first word lists the verbs, so they are discoverable", async () =
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", ""), [
     "/compact",
+    "/create",
     "/diff",
     "/new",
     "/reset",

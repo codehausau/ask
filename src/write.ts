@@ -132,3 +132,66 @@ export const WRITE_SYSTEM =
   "newline convention. Make only the changes the request asks for; leave every " +
   "other line byte-identical. If the request cannot be satisfied, output the " +
   "file unchanged.";
+
+/** System prompt for `/create`: a whole new file, nothing else. */
+export const CREATE_SYSTEM =
+  "You write one new source file. Output the complete contents of that file and " +
+  "nothing else: no explanation, no commentary, no markdown code fence. Match " +
+  "the conventions of any files supplied as context — language, style, " +
+  "indentation, naming, import order, comment density. End with a single " +
+  "trailing newline.";
+
+export interface CreateRequestInput {
+  /** Path as given on the command line. */
+  readonly target: string;
+  /** True when something already exists at that path. */
+  readonly exists: boolean;
+  /** True when the containing directory exists. */
+  readonly parentExists: boolean;
+  /** True when --write or --diff was also passed. */
+  readonly withEditFlags: boolean;
+}
+
+/**
+ * Checks before spending tokens. Creating a file destroys nothing, so the only
+ * hazards are clobbering an existing file and conjuring directories.
+ */
+export function checkCreateRequest(input: CreateRequestInput): string[] {
+  const problems: string[] = [];
+
+  if (input.target.trim().length === 0) {
+    problems.push("/create needs a path, e.g. /create test/env.test.ts");
+  }
+  if (input.exists) {
+    problems.push(`${input.target} already exists; use /write to change a file in place`);
+  }
+  if (!input.parentExists) {
+    problems.push(
+      `the directory for ${input.target} does not exist; create it first ` +
+        "(directories are never created implicitly)",
+    );
+  }
+  if (input.withEditFlags) {
+    problems.push("/create does not combine with /write or /diff");
+  }
+  return problems;
+}
+
+/**
+ * Checks on the response. No shrink test applies: there is no original to
+ * compare against, which is precisely why creating is the safer operation.
+ */
+export function checkCreateResponse(proposed: string, finishReason: string | null): string[] {
+  const problems: string[] = [];
+
+  if (finishReason === "length") {
+    problems.push(
+      "the response hit the token cap and is incomplete; the file would be cut off " +
+        "(raise --max-tokens)",
+    );
+  }
+  if (proposed.trim().length === 0) {
+    problems.push("the model returned nothing to write");
+  }
+  return problems;
+}

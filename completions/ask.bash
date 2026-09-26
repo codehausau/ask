@@ -22,19 +22,20 @@
 # Set ASK_FZF=0 to force plain completion even when fzf is installed.
 
 # Kept in sync with src/options.ts by test/completion.test.ts.
-_ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --dry-run --file \
+_ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --create \
+--diff --dry-run --file \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
 --list-sessions --max-total-bytes --model --new --no-color --no-session \
 --quiet --reset \
 --session \
---diff --force --session-max-tokens --show-context --show-session --switch \
+--force --session-max-tokens --show-context --show-session --switch \
 --system --write \
 --system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
 
 # Chat-style verbs, accepted as the first word after `ask`.
-_ASK_VERBS="/compact /diff /new /reset /session /sessions /switch /write"
+_ASK_VERBS="/compact /create /diff /new /reset /session /sessions /switch /write"
 
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}

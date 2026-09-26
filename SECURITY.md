@@ -84,6 +84,12 @@ The checks exist for specific failure modes rather than as ceremony:
 `--diff` performs the same request and prints a patch without writing, which is
 the safe way to inspect an edit first.
 
+`/create <path>` writes a *new* file. git is not the safety net there because
+creating destroys nothing; instead the path must not already exist, parent
+directories are never created implicitly, and the write uses an exclusive-create
+flag so a file appearing between the check and the write cannot be overwritten.
+A truncated or empty response is refused as above.
+
 ## Key handling
 
 `OPENAI_API_KEY` is read from the environment or a local `.env`, which is

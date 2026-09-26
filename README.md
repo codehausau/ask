@@ -269,6 +269,7 @@ file does not exist.
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
+| `--create <path>` / `/create` | write a new file; refuses if it exists |
 | `--write` / `/write` | replace the single attached file with the answer |
 | `--diff` / `/diff` | show the proposed change, write nothing |
 | `--force` | allow `--write` on a dirty or untracked file, and bypass the size check |
@@ -368,6 +369,34 @@ Other behaviour worth knowing:
 - An answer identical to the file reports `unchanged` and writes nothing, leaving
   the mtime alone.
 
+### Creating a new file
+
+`/create <path>` writes a file that does not exist yet:
+
+```console
+$ ask /create test/env.test.ts '@src/env.ts @test/refs.test.ts write tests for env.ts in this style'
+-- created test/env.test.ts: 74 lines, 2.1 KB
+-- untracked; review it, then 'git add test/env.test.ts'
+```
+
+Two differences from `/write`:
+
+- **Any amount of context is allowed.** For a new file you usually want several
+  files as examples, so the one-file rule does not apply.
+- **git is not the safety net**, because creating destroys nothing. The guard is
+  simply that the path must not exist — clobbering is `/write`'s job. Parent
+  directories are never created implicitly, and the write itself uses an
+  exclusive-create flag so nothing can slip in between the check and the write.
+
+Refused if the path exists, the parent directory does not, `/write` or `/diff`
+were also passed, the response is empty, or the response hit the token cap.
+There is no minimum-size check: a one-line file is a perfectly good new file.
+
+The redirection you might otherwise reach for — `ask '...' > new.ts` — saves the
+model's prose and code fence into the file as well. `/create` uses a system
+prompt demanding the bare file contents, and strips a wrapping fence if one
+appears anyway.
+
 ## Sessions
 
 Interactive runs continue the previous conversation for the current repository,
@@ -391,6 +420,7 @@ ask /sessions         # list this repository's threads
 ask /switch <name>    # switch thread, creating it if new
 ask /write '<prompt>' # edit the single attached file
 ask /diff  '<prompt>' # preview that edit
+ask /create <path> '<prompt>'   # write a new file
 ask /compact          # summarise the thread into notes, files stay attached
 ```
 

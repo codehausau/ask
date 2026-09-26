@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  checkCreateRequest,
+  checkCreateResponse,
+  CREATE_SYSTEM,
   checkWriteRequest,
   checkWriteResponse,
   stripCodeFence,
@@ -129,4 +132,41 @@ test("the write system prompt forbids commentary and fences", () => {
   assert.match(WRITE_SYSTEM, /no markdown code\s+fence/);
   assert.match(WRITE_SYSTEM, /byte-identical/);
   assert.match(WRITE_SYSTEM, /output the\s+file unchanged/);
+});
+
+test("creating refuses an existing path, a missing parent, or mixed flags", () => {
+  const ok = { target: "new.ts", exists: false, parentExists: true, withEditFlags: false };
+  assert.deepEqual(checkCreateRequest(ok), []);
+
+  assert.match(
+    checkCreateRequest({ ...ok, exists: true })[0] ?? "",
+    /already exists; use \/write/,
+    "clobbering is /write's job, not /create's",
+  );
+  assert.match(
+    checkCreateRequest({ ...ok, parentExists: false })[0] ?? "",
+    /directory for new\.ts does not exist/,
+  );
+  assert.match(
+    checkCreateRequest({ ...ok, withEditFlags: true })[0] ?? "",
+    /does not combine with \/write or \/diff/,
+  );
+  assert.match(checkCreateRequest({ ...ok, target: "  " })[0] ?? "", /needs a path/);
+});
+
+test("creating has no shrink check, since there is nothing to compare with", () => {
+  // A one-line file is a perfectly good new file.
+  assert.deepEqual(checkCreateResponse("export const a = 1;\n", "stop"), []);
+
+  assert.match(
+    checkCreateResponse("partial", "length")[0] ?? "",
+    /hit the token cap and is incomplete/,
+  );
+  assert.match(checkCreateResponse("   \n", "stop")[0] ?? "", /returned nothing to write/);
+});
+
+test("the create system prompt asks it to match the supplied context", () => {
+  assert.match(CREATE_SYSTEM, /one new source file/);
+  assert.match(CREATE_SYSTEM, /no markdown code fence/);
+  assert.match(CREATE_SYSTEM, /Match\s+the conventions of any files supplied as context/);
 });

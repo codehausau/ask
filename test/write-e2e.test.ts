@@ -287,3 +287,75 @@ test("the thread records what was written, never the file contents", async () =>
     await endpoint.close();
   }
 });
+
+test("/create writes a new file and leaves it untracked", async () => {
+  const endpoint = await stub(() => ({ content: "export const created = true;\n" }));
+  const { cwd, state } = await repo();
+  try {
+    const run = await runCli(["/create", "fresh.ts", "@widget.ts make something like this"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(await readFile(path.join(cwd, "fresh.ts"), "utf8"), "export const created = true;\n");
+    assert.match(run.stderr, /created fresh\.ts: 1 lines/);
+    assert.match(run.stderr, /git add fresh\.ts/);
+    // The content went to the file, not stdout.
+    assert.equal(run.stdout.includes("created = true"), false);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/create refuses to clobber, and accepts several context files", async () => {
+  const endpoint = await stub(() => ({ content: "new\n" }));
+  const { cwd, state } = await repo();
+  try {
+    const clobber = await runCli(["/create", "widget.ts", "rewrite it"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+    assert.equal(clobber.code, 2);
+    assert.match(clobber.stderr, /already exists; use \/write/);
+    assert.equal(await readFile(path.join(cwd, "widget.ts"), "utf8"), ORIGINAL, "untouched");
+
+    const missingDir = await runCli(["/create", "nope/deep.ts", "something"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+    assert.equal(missingDir.code, 2);
+    assert.match(missingDir.stderr, /does not exist/);
+
+    // Neither wasted a request.
+    assert.equal(endpoint.count(), 0);
+
+    // Unlike /write, several context files are fine.
+    const many = await runCli(["/create", "both.ts", "@widget.ts @other.ts combine these"], {
+      cwd,
+      state,
+      url: endpoint.url,
+    });
+    assert.equal(many.code, 0, many.stderr);
+    assert.equal(endpoint.count(), 1);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/create refuses a response truncated by the token cap", async () => {
+  const endpoint = await stub(() => ({ content: "half a fi", finishReason: "length" }));
+  const { cwd, state } = await repo();
+  try {
+    const run = await runCli(["/create", "fresh.ts", "write it"], { cwd, state, url: endpoint.url });
+
+    assert.equal(run.code, 2);
+    assert.match(run.stderr, /hit the token cap/);
+    await assert.rejects(() => readFile(path.join(cwd, "fresh.ts"), "utf8"), /ENOENT/);
+  } finally {
+    await endpoint.close();
+  }
+});

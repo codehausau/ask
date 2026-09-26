@@ -7,7 +7,7 @@
 //
 // No tools, no agent loop, no follow-up turns: exactly one HTTP request.
 
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -30,6 +30,9 @@ import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import { startSpinner } from "./spinner.ts";
 import {
+  checkCreateRequest,
+  checkCreateResponse,
+  CREATE_SYSTEM,
   checkWriteRequest,
   checkWriteResponse,
   stripCodeFence,
@@ -76,7 +79,9 @@ Usage
 
 Editing a file
   With exactly one file attached, /write (or --write) replaces it with the
-  model's answer, and /diff (or --diff) previews that without writing. Refused if the file is not tracked
+  model's answer, and /diff (or --diff) previews that without writing.
+  /create <path> writes a new file instead, and refuses if it already exists;
+  unlike /write it accepts any amount of context. Refused if the file is not tracked
   and clean in git (--force overrides), if the file was truncated to fit the
   context, or if the answer hit the token cap.
 
@@ -91,6 +96,8 @@ Sessions
   ask /switch <name>     switch to a thread, creating it if new
   ask /write '<prompt>'  edit the single attached file (alias of --write)
   ask /diff '<prompt>'   preview that edit without writing (alias of --diff)
+  ask /create <path> '<prompt>'
+                         write a new file; any context is allowed
   ask /compact           summarise the thread into notes, keeping files attached
   --no-session           one-shot, ignoring and not touching the thread
 
@@ -120,6 +127,7 @@ Options
       --max-file-bytes <n>  per-file cap before truncation (default 262144)
       --max-total-bytes <n> total context cap (default 1048576)
       --max-files <n>       max files from directory walks (default 200)
+      --create <path>       alias of /create
       --write               alias of /write
       --diff                alias of /diff
       --force               allow --write on a dirty or untracked file
@@ -476,6 +484,7 @@ async function main(argv: string[]): Promise<number> {
 
   const envReports = await applyEnvFiles(envCandidates());
 
+  const createPath = flag("create");
   const stdinText = await readStdin();
   const { refs, question } = extractRefs(positionals.join(" "));
   const turnRefs = [...refs, ...((values["file"] as string[] | undefined) ?? [])];
@@ -656,7 +665,12 @@ async function main(argv: string[]): Promise<number> {
   // Write mode needs "output the whole file and nothing else"; an explicitly
   // chosen system prompt still wins.
   const system =
-    explicitSystem ?? (bool("write") || bool("diff") ? WRITE_SYSTEM : DEFAULT_SYSTEM);
+    explicitSystem ??
+    (createPath !== undefined
+      ? CREATE_SYSTEM
+      : bool("write") || bool("diff")
+        ? WRITE_SYSTEM
+        : DEFAULT_SYSTEM);
 
   if (bool("show-context")) {
     printContext(context, {
@@ -673,6 +687,31 @@ async function main(argv: string[]): Promise<number> {
   if (!bool("quiet") && !bool("json")) {
     for (const note of resolutionNotes(context, process.cwd())) {
       status.note(`-- ${note}`);
+    }
+  }
+
+  // /create: refuse before spending tokens. Creating destroys nothing, so the
+  // only hazards are clobbering a file and conjuring directories.
+  if (createPath !== undefined) {
+    const absolute = path.resolve(process.cwd(), createPath);
+    const exists = await stat(absolute).then(
+      () => true,
+      () => false,
+    );
+    const parentExists = await stat(path.dirname(absolute)).then(
+      (info) => info.isDirectory(),
+      () => false,
+    );
+    const problems = checkCreateRequest({
+      target: createPath,
+      exists,
+      parentExists,
+      withEditFlags: bool("write") || bool("diff"),
+    });
+    if (problems.length > 0) {
+      throw new ConfigError(
+        `cannot create:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`,
+      );
     }
   }
 
@@ -754,6 +793,36 @@ async function main(argv: string[]): Promise<number> {
 
   // Set when a write happened (or was a no-op), standing in for the answer.
   let writeSummary: string | null = null;
+
+  // /create: the answer is a new file.
+  if (createPath !== undefined) {
+    const absolute = path.resolve(process.cwd(), createPath);
+    const { content, strippedFence } = stripCodeFence(result.text);
+    const proposed = content.endsWith("\n") ? content : `${content}\n`;
+
+    const problems = checkCreateResponse(proposed, result.finishReason);
+    if (problems.length > 0) {
+      throw new ConfigError(
+        `refusing to create ${createPath}:\n` +
+          problems.map((line: string) => `  - ${line}`).join("\n"),
+      );
+    }
+
+    if (strippedFence && !bool("quiet")) {
+      status.note("-- stripped a markdown code fence from the response");
+    }
+
+    // Exclusive create: nothing can have appeared since the pre-flight check.
+    await writeFile(absolute, proposed, { flag: "wx" });
+
+    const lines = proposed.split("\n").length - 1;
+    const summary = `created ${createPath}: ${lines} lines, ${formatBytes(
+      Buffer.byteLength(proposed, "utf8"),
+    )}`;
+    status.note(`-- ${summary}`);
+    status.note(`-- untracked; review it, then 'git add ${createPath}'`);
+    writeSummary = `(${summary})`;
+  }
 
   // --write / --diff: the model returned a whole file, so check it and either
   // preview or replace. The model never chooses to write; this does.
