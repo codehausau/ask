@@ -56,6 +56,15 @@ npm install --global \
   "https://github.com/codehausau/ask/releases/download/v$VERSION/codehaus-ask-$VERSION.tgz"
 ```
 
+Upgrading later is one command (the symlink points at `dist/`, which is
+gitignored, so a rebuild is what actually publishes the change):
+
+```bash
+cd ~/ask && pnpm refresh && exec bash
+```
+
+`exec bash` is only needed when the completion script changed.
+
 Put it on your `PATH` as `ask`:
 
 ```bash
