@@ -79,8 +79,13 @@ ask -q '@README.md summarise this in one sentence'
 ## Tab completion and the `@` picker
 
 ```bash
-echo "source $PWD/completions/ask.bash" >> ~/.bashrc && exec bash
+ask --install-completion --apply && exec bash
 ```
+
+That resolves the absolute path itself, writes a guarded block, and clears any
+stale lines from earlier attempts — a hand-written `source $PWD/...` line is easy
+to get wrong and then errors on every new shell. Omit `--apply` to print the
+block instead of writing it; `ASK_RC` overrides the target file.
 
 What `@<TAB>` does depends on whether [fzf](https://github.com/junegunn/fzf) is
 installed (`apt-get install fzf`, `brew install fzf`):

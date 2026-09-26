@@ -19,6 +19,8 @@ export const OPTIONS = {
   "include-secrets": { type: "boolean" },
   new: { type: "boolean" },
   compact: { type: "boolean" },
+  "install-completion": { type: "boolean" },
+  apply: { type: "boolean" },
   reset: { type: "boolean" },
   session: { type: "string" },
   "show-session": { type: "boolean" },

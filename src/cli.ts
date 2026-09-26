@@ -7,7 +7,8 @@
 //
 // No tools, no agent loop, no follow-up turns: exactly one HTTP request.
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ import {
   type TokenField,
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
+import { applyToRc, installInstructions } from "./install.ts";
 import { OPTIONS, VERBS } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
@@ -108,6 +110,7 @@ Options
   -q, --quiet               no stderr footer
   -V, --version             print the version
   -h, --help                this help
+      --install-completion  print the shell setup block (--apply writes it)
 `;
 
 class UsageError extends Error {}
@@ -281,6 +284,60 @@ function printSession(session: Session | null, file: string): void {
   );
 }
 
+/**
+ * Locate completions/ask.bash relative to this entrypoint, which differs
+ * between the compiled CLI (dist/src/cli.js) and running the source directly.
+ */
+async function findCompletionScript(): Promise<string | null> {
+  for (const candidate of ["../completions/ask.bash", "../../completions/ask.bash"]) {
+    const resolved = fileURLToPath(new URL(candidate, import.meta.url));
+    try {
+      await readFile(resolved);
+      return resolved;
+    } catch {
+      // try the next layout
+    }
+  }
+  return null;
+}
+
+/** Print, or with `apply` write, the shell integration block. */
+async function installCompletion(apply: boolean): Promise<number> {
+  const script = await findCompletionScript();
+  if (!script) {
+    process.stderr.write(
+      "ask: cannot find completions/ask.bash next to this install\n" +
+        "     (a packaged copy ships in the tarball; clone the repo if it is missing)\n",
+    );
+    return 1;
+  }
+
+  const rcPath = process.env["ASK_RC"] ?? path.join(homedir(), ".bashrc");
+
+  if (!apply) {
+    process.stdout.write(installInstructions(script, rcPath));
+    return 0;
+  }
+
+  const existing = await readFile(rcPath, "utf8").catch(() => "");
+  const update = applyToRc(existing, script);
+
+  if (!update.changed) {
+    process.stdout.write(`already configured in ${rcPath}\n`);
+    return 0;
+  }
+
+  await writeFile(rcPath, update.text);
+  process.stdout.write(
+    `${update.replacedBlock ? "refreshed" : "added"} the ask block in ${rcPath}\n` +
+      (update.removedStale > 0
+        ? `cleared ${update.removedStale} stale line(s) from earlier attempts\n`
+        : "") +
+      `run 'exec bash' to load it\n`,
+  );
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Record<string, unknown>;
   let positionals: string[];
@@ -310,6 +367,10 @@ async function main(argv: string[]): Promise<number> {
   if (bool("version")) {
     process.stdout.write(`ask ${await readVersion()}\n`);
     return 0;
+  }
+
+  if (bool("install-completion")) {
+    return installCompletion(bool("apply"));
   }
 
   loadEnvFiles();
