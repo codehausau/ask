@@ -28,7 +28,8 @@ _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --dry-run --fil
 --list-sessions --max-total-bytes --model --new --no-color --no-session \
 --quiet --reset \
 --session \
---session-max-tokens --show-context --show-session --switch --system \
+--diff --force --session-max-tokens --show-context --show-session --switch \
+--system --write \
 --system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
 

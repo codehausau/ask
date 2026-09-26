@@ -26,7 +26,7 @@ matters should be enforced in code, not policy:
 | Turns per invocation | Exactly one request, asserted in [`test/chat.test.ts`](test/chat.test.ts) |
 | SDK surface used | One method; `createClient` returns a 1-method `ChatClient`, not the whole SDK client |
 | Model-driven file access | None — the model only sees paths **you** name with `@` |
-| Writes to your filesystem | None; output goes to stdout |
+| Writes to your filesystem | Only with `--write`, only to the single file you attached, and only after [checks that fail closed](#editing-a-file). The model is given no tool and cannot choose to write; output otherwise goes to stdout |
 | Network calls | One, to the endpoint you configure |
 | Runtime dependencies | One (`openai`, the official SDK) |
 
@@ -269,6 +269,9 @@ file does not exist.
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
+| `--write` | replace the single attached file with the answer |
+| `--diff` | show the proposed change, write nothing |
+| `--force` | allow `--write` on a dirty or untracked file, and bypass the size check |
 | `--all-matches` | attach every search match instead of the single best one |
 | `--include-secrets` | stop skipping `.env`, `*.pem`, key-ish files |
 | `--show-context` | list attachments and exit |
@@ -315,6 +318,54 @@ for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
 `api.openai.com` gets `max_completion_tokens` (newer models reject
 `max_tokens`); every other base URL gets `max_tokens`. Override with
 `--token-field` if your gateway disagrees.
+
+## Editing a file
+
+With exactly one file in context, `--write` replaces it with the model's answer,
+and `--diff` previews that without touching anything:
+
+```console
+$ ask --diff '@src/chat.ts add a docstring to tokenLimitField'
+diff --git a/src/chat.ts b/ask-proposed-chat.ts
+@@ -78,6 +78,10 @@
++/**
++ * ...
++ */
+
+$ ask --write '@src/chat.ts add a docstring to tokenLimitField'
+-- wrote src/chat.ts: 157 → 161 lines, 4.6 KB → 4.8 KB
+-- review with 'git diff', undo with 'git checkout --'
+```
+
+This is the only feature that modifies your source tree, so it refuses rather
+than risk it. **The model never decides to write** — you pass the flag, and the
+CLI writes. Every one of these must hold:
+
+| Refused when | Why |
+| --- | --- |
+| more or fewer than one file is attached | with two files there is no unambiguous target |
+| any `@ref` resolved to a directory | a directory holding one file would otherwise look like naming it |
+| the file was truncated by the context caps | the model never saw the end of it, so its answer would delete code |
+| something was piped in | the target would be ambiguous |
+| the response hit the token cap (`finish_reason: length`) | **the most dangerous case** — writing a truncated answer silently chops the file |
+| the response is empty | nothing to write |
+| the response is under 25% of the original size | looks like a partial answer rather than an edit (`--force` overrides) |
+| the file is not tracked and clean in git | git is the undo button, so it has to be able to act as one (`--force` overrides) |
+
+Everything above the git check is verified *before* the request is sent, so an
+impossible write costs no tokens.
+
+Other behaviour worth knowing:
+
+- A markdown code fence wrapping the **whole** answer is stripped, and reported.
+  A file that legitimately contains fences (like this README) is left alone.
+- The file's trailing-newline convention is preserved.
+- In write mode the answer goes to the file, not stdout, and the thread records
+  `(wrote src/chat.ts: …)` rather than the file contents.
+- Write mode replaces the system prompt with one demanding the complete file and
+  nothing else; `--system` still overrides it.
+- An answer identical to the file reports `unchanged` and writes nothing, leaving
+  the mtime alone.
 
 ## Sessions
 

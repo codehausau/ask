@@ -54,6 +54,12 @@ export interface ContextResult {
   readonly skipped: readonly SkippedEntry[];
   /** How each `@ref` was resolved: verbatim path, glob, or search. */
   readonly resolutions: readonly Resolution[];
+  /**
+   * Directories that were expanded. A directory holding a single file would
+   * otherwise be indistinguishable from naming that file, which matters for
+   * --write.
+   */
+  readonly directories: readonly string[];
   readonly totalBytes: number;
   readonly truncated: boolean;
 }
@@ -170,6 +176,7 @@ export async function collectContext(
   const candidates: string[] = [];
   const skipped: SkippedEntry[] = [];
   const resolutions: Resolution[] = [];
+  const directories: string[] = [];
 
   for (const ref of refs) {
     const resolution = await resolveRef(ref, {
@@ -183,6 +190,7 @@ export async function collectContext(
       const info = await stat(absolute);
 
       if (info.isDirectory()) {
+        directories.push(path.relative(cwd, absolute) || ".");
         await walk(absolute, { cwd, limits, includeSecrets, found: candidates, skipped });
         continue;
       }
@@ -229,7 +237,7 @@ export async function collectContext(
     totalBytes += Math.min(buffer.byteLength, room);
   }
 
-  return { blocks, skipped, resolutions, totalBytes, truncated };
+  return { blocks, skipped, resolutions, directories, totalBytes, truncated };
 }
 
 /** Assemble the single user message: context blocks first, question last. */

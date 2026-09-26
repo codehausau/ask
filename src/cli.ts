@@ -7,8 +7,8 @@
 //
 // No tools, no agent loop, no follow-up turns: exactly one HTTP request.
 
-import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -25,9 +25,17 @@ import {
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour.ts";
+import { gitDiffNoIndex, gitFileState } from "./git.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import { startSpinner } from "./spinner.ts";
+import {
+  checkWriteRequest,
+  checkWriteResponse,
+  stripCodeFence,
+  summariseChange,
+  WRITE_SYSTEM,
+} from "./write.ts";
 import { OPTIONS, VERBS, VERBS_WITH_VALUE } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
@@ -65,6 +73,12 @@ Usage
   ask [options] '<prompt with @file, @dir, @glob or @search references>'
   ask /new | /reset | /session
   <command> | ask [options] '<prompt>'
+
+Editing a file
+  With exactly one file attached, --write replaces it with the model's answer,
+  and --diff previews that without writing. Refused if the file is not tracked
+  and clean in git (--force overrides), if the file was truncated to fit the
+  context, or if the answer hit the token cap.
 
 Sessions
   Interactive runs continue the previous conversation for this repository,
@@ -104,6 +118,9 @@ Options
       --max-file-bytes <n>  per-file cap before truncation (default 262144)
       --max-total-bytes <n> total context cap (default 1048576)
       --max-files <n>       max files from directory walks (default 200)
+      --write               replace the single attached file with the answer
+      --diff                show the proposed change, write nothing
+      --force               allow --write on a dirty or untracked file
       --all-matches         attach every search match instead of the best one
       --include-secrets     do not skip .env / *.pem / key-ish files
       --new, --reset        alias of /new
@@ -463,7 +480,12 @@ async function main(argv: string[]): Promise<number> {
 
   // Sessions are implicit for interactive runs only: a piped or scripted run
   // must stay reproducible. `--session <name>` forces them on regardless.
-  const sessionsDisabled = bool("no-session") || process.env["ASK_SESSION"] === "0";
+  // --no-session is the absolute off switch. ASK_SESSION=0 turns sessions off
+  // for the shell, but naming a thread explicitly is a stronger signal than an
+  // environment default, so --session <name> overrides it.
+  const sessionsDisabled =
+    bool("no-session") ||
+    (process.env["ASK_SESSION"] === "0" && flag("session") === undefined);
   const switchTo = flag("switch");
   const sessionsOn =
     !sessionsDisabled && (process.stdout.isTTY === true || flag("session") !== undefined);
@@ -626,9 +648,13 @@ async function main(argv: string[]): Promise<number> {
   });
 
   const systemFile = flag("system-file");
-  const system = systemFile
+  const explicitSystem = systemFile
     ? await readFile(systemFile, "utf8")
-    : (flag("system") ?? process.env["ASK_SYSTEM"] ?? DEFAULT_SYSTEM);
+    : (flag("system") ?? process.env["ASK_SYSTEM"]);
+  // Write mode needs "output the whole file and nothing else"; an explicitly
+  // chosen system prompt still wins.
+  const system =
+    explicitSystem ?? (bool("write") || bool("diff") ? WRITE_SYSTEM : DEFAULT_SYSTEM);
 
   if (bool("show-context")) {
     printContext(context, {
@@ -645,6 +671,21 @@ async function main(argv: string[]): Promise<number> {
   if (!bool("quiet") && !bool("json")) {
     for (const note of resolutionNotes(context, process.cwd())) {
       status.note(`-- ${note}`);
+    }
+  }
+
+  // --write and --diff: refuse before spending tokens, not after.
+  const writeMode = bool("write") || bool("diff");
+  const targetFile = context.blocks[0]?.path;
+  if (writeMode) {
+    const problems = checkWriteRequest({
+      attachedFiles: context.blocks.map((block) => block.path),
+      hadDirectory: context.directories.length > 0,
+      contextTruncated: context.truncated,
+      hadStdin: stdinText.length > 0,
+    });
+    if (problems.length > 0) {
+      throw new ConfigError(`cannot write:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`);
     }
   }
 
@@ -709,6 +750,90 @@ async function main(argv: string[]): Promise<number> {
     spinner.stop();
   }
 
+  // Set when a write happened (or was a no-op), standing in for the answer.
+  let writeSummary: string | null = null;
+
+  // --write / --diff: the model returned a whole file, so check it and either
+  // preview or replace. The model never chooses to write; this does.
+  if (writeMode && targetFile !== undefined) {
+    const absolute = path.resolve(process.cwd(), targetFile);
+    const original = context.blocks[0]?.text ?? "";
+    const { content, strippedFence } = stripCodeFence(result.text);
+    // Preserve the file's trailing-newline convention.
+    const proposed = original.endsWith("\n") && !content.endsWith("\n") ? `${content}\n` : content;
+
+    const problems = checkWriteResponse({
+      original,
+      proposed,
+      finishReason: result.finishReason,
+      ...(bool("force") ? { shrinkFloor: 0 } : {}),
+    });
+    if (problems.length > 0) {
+      throw new ConfigError(
+        `refusing to write ${targetFile}:\n` +
+          problems.map((line: string) => `  - ${line}`).join("\n"),
+      );
+    }
+
+    if (strippedFence && !bool("quiet")) {
+      status.note("-- stripped a markdown code fence from the response");
+    }
+
+    const change = summariseChange(original, proposed);
+    if (proposed === original && !bool("diff")) {
+      status.note(`-- ${targetFile} unchanged`);
+      writeSummary = `(no change to ${targetFile})`;
+    }
+
+    // Preview mode: show the diff, touch nothing.
+    if (bool("diff")) {
+      const temporary = path.join(tmpdir(), `ask-proposed-${process.pid}-${path.basename(targetFile)}`);
+      await writeFile(temporary, proposed);
+      try {
+        const diff = await gitDiffNoIndex(absolute, temporary, colour.enabled);
+        process.stdout.write(
+          diff ??
+            `${targetFile}: ${change.beforeLines} → ${change.afterLines} lines ` +
+              `(git unavailable, so no diff)\n`,
+        );
+      } finally {
+        await rm(temporary, { force: true });
+      }
+      status.note(`-- nothing written; drop --diff to apply`);
+      return 0;
+    }
+
+    // Unchanged answers need no write at all.
+    if (writeSummary === null) {
+      // git is the undo button, so require that it can act as one.
+      const state = await gitFileState(absolute);
+      if (state !== "clean" && !bool("force")) {
+        const detail =
+          state === "dirty"
+            ? "it has uncommitted changes"
+            : state === "untracked"
+              ? "it is not tracked by git"
+              : "it is not in a git repository";
+        throw new ConfigError(
+          `refusing to overwrite ${targetFile}: ${detail}, so the current contents ` +
+            "could not be recovered. Commit or stash first, or pass --force.",
+        );
+      }
+
+      await writeFile(absolute, proposed);
+      const summary =
+        `wrote ${targetFile}: ${change.beforeLines} → ${change.afterLines} lines, ` +
+        `${formatBytes(change.beforeBytes)} → ${formatBytes(change.afterBytes)}`;
+      status.note(`-- ${summary}`);
+      if (state === "clean") {
+        status.note("-- review with 'git diff', undo with 'git checkout --'");
+      }
+      // The answer *is* the file, so the thread records what happened instead:
+      // history must never accumulate file contents.
+      writeSummary = `(${summary})`;
+    }
+  }
+
   // Record the turn. Only the question, the refs as typed, and the answer —
   // never file contents, which are re-read next turn.
   let saved: Session | null = null;
@@ -718,7 +843,7 @@ async function main(argv: string[]): Promise<number> {
       name: sessionName,
       question: question || (stdinText ? "(piped input)" : ""),
       refs: turnRefs,
-      answer: result.text,
+      answer: writeSummary ?? result.text,
       usage: result.usage,
     });
     await saveSession(saved);
@@ -753,7 +878,8 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  process.stdout.write(`${result.text}\n`);
+  // In write mode the answer is the file itself; it is on disk, not stdout.
+  if (writeSummary === null) process.stdout.write(`${result.text}\n`);
 
   if (!bool("quiet")) {
     // Implicit state must be visible: say which thread and which turn.

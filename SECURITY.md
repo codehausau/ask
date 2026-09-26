@@ -19,7 +19,7 @@ will *not* do.
 | Exactly one HTTP request per invocation | No loop in the codebase; asserted in `test/chat.test.ts` |
 | Only one SDK method is reachable | `createClient` returns a one-method `ChatClient`, not the SDK client |
 | The model cannot choose what it reads | Context comes only from `@paths` and `-f` flags you pass |
-| Nothing is written to your filesystem except the session file | Answers go to stdout; the only write is the session thread described below |
+| Nothing is written to your filesystem unless you ask for it | Answers go to stdout. The only writes are the session thread described below, and `--write` / `--force`, which replace one named file under the conditions in the README |
 | Only one subprocess, read-only | `git ls-files` enumerates candidate paths for `@search`; it never reads file contents and is skipped outside a git work tree |
 | Credentials are not attached by accident | `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `credentials.json` and similar are skipped even when named explicitly, unless `--include-secrets` |
 | You can see the payload before sending | `--dry-run` prints the exact JSON body; `--show-context` lists attachments and never calls the API |
@@ -59,6 +59,30 @@ This is the tool's only persistent state, and its only write.
 
 Sessions do not change the one-request property: each invocation still issues
 exactly one chat completion, with no tools.
+
+## Writing to a file
+
+`--write` is the only feature that modifies your source tree, and it is opt-in
+per invocation. The model is not given a tool and does not choose to write: it
+returns text, and the CLI writes that text to the one file you attached, after
+checks that fail closed.
+
+The checks exist for specific failure modes rather than as ceremony:
+
+- **A truncated response is refused outright** (`finish_reason: length`). Writing
+  one would silently remove the end of the file.
+- **A file truncated by the context caps is refused**, because the model never
+  saw the part it would be deleting.
+- **A response under 25% of the original size is refused**, which catches a model
+  answering with a fragment or a comment instead of the file.
+- **The file must be tracked and clean in git**, so `git diff` shows exactly what
+  changed and `git checkout --` reverts it. `--force` bypasses this, at which
+  point recovery is your responsibility.
+- **Ambiguity is refused before the request is sent**: more than one file, a
+  directory, or piped input.
+
+`--diff` performs the same request and prints a patch without writing, which is
+the safe way to inspect an edit first.
 
 ## Key handling
 

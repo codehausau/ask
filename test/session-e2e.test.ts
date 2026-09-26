@@ -246,7 +246,9 @@ test("--no-session and ASK_SESSION=0 opt out entirely", async () => {
       ["system", "user"],
     );
 
-    await runCli(["--session", "t5", "third"], { ...base, env: { ASK_SESSION: "0" } });
+    // ASK_SESSION=0 without an explicit --session: no thread at all. (With
+    // --session it is overridden; see the precedence test below.)
+    await runCli(["third"], { ...base, env: { ASK_SESSION: "0" } });
     assert.deepEqual(
       endpoint.requests[2]!.messages.map((message) => message.role),
       ["system", "user"],
@@ -445,6 +447,29 @@ test("ASK_SESSION names a thread, and /switch is rejected without a name", async
 
     await assert.rejects(() => runCli(["/switch"], base), /needs a name/);
     await assert.rejects(() => runCli(["/switch", "bad name"], base), /invalid thread name|needs a name/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("--session overrides ASK_SESSION=0, but --no-session always wins", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    // ASK_SESSION=0 is a shell-wide default; naming a thread is deliberate.
+    await runCli(["--session", "explicit", "@widget.ts first"], {
+      ...base,
+      env: { ASK_SESSION: "0" },
+    });
+    const shown = await runCli(["/session", "--session", "explicit"], base);
+    assert.match(shown, /thread explicit\s+1 turn\(s\)/);
+
+    // --no-session is absolute, even alongside --session.
+    await runCli(["--session", "explicit", "--no-session", "second"], base);
+    const after = await runCli(["/session", "--session", "explicit"], base);
+    assert.match(after, /1 turn\(s\)/, "the --no-session run was not recorded");
   } finally {
     await endpoint.close();
   }
