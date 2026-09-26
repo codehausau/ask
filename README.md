@@ -269,6 +269,8 @@ file does not exist.
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
+| `--skill <name>` | prepend a skill's instructions; repeatable, searched if inexact |
+| `--list-skills` / `/skills [term]` | list or search available skills |
 | `--create <path>` / `/create` | write a new file; refuses if it exists |
 | `--write <path>` / `/write <path>` | replace that file with the answer |
 | `--diff <path>` / `/diff <path>` | show the proposed change, write nothing |
@@ -400,6 +402,54 @@ model's prose and code fence into the file as well. `/create` uses a system
 prompt demanding the bare file contents, and strips a wrapping fence if one
 appears anyway.
 
+## Skills
+
+A skill is a directory containing `SKILL.md` — reusable instructions with
+`name` and `description` front matter, the same layout agent harnesses use, so an
+existing skills directory works unchanged.
+
+```console
+$ ask /skills                    # list what is available
+$ ask /skills code-review        # search names and descriptions
+
+$ ask --skill code-review '@src/chat.ts review this'
+-- skill bmad-code-review [search]
+```
+
+The skill's body is appended to the system prompt, wrapped in
+`<skill name="...">`: instructions belong there, not in the user message
+alongside your files. `--skill` is repeatable and composes in the order given.
+
+| Behaviour | Detail |
+| --- | --- |
+| Where skills come from | `$ASK_SKILLS_DIR` (colon-separated), `./.ask/skills`, `./.agents/skills`, `~/.config/ask/skills`, `~/.claude/skills` — first match wins, so a repository-local skill shadows a personal one |
+| Selection | exact name, else a ranked search over names and descriptions; a tie lists the candidates instead of guessing, and any search match is reported before the request |
+| What is read | **`SKILL.md` only.** Bundled `assets/` and scripts are ignored — a one-shot CLI cannot run them, and a large skill directory would silently eat the context budget. Attach files a skill refers to with `@` |
+| Front matter | stripped; it is metadata, not instructions |
+| Size limit | 128 KB per skill, refused above that |
+| Sessions | skills carry across a thread like `@refs`, re-read from disk each turn |
+| Cost | shown on its own line by `--show-context`, and named in the footer |
+
+```console
+$ ask --skill code-review --show-context '@package.json review'
+estimated tokens for the next request
+  files     ~400
+  skills    ~1013 (bmad-code-review)
+  question  ~2
+  system    ~45
+  total     ~1460
+```
+
+**The model never selects the skill.** A model that could choose what to load
+would be making a tool call, which is the one thing this tool does not do. You
+name it, or the CLI searches and tells you what it picked.
+
+> **Skills written for agents may not fit.** A skill that says "launch parallel
+> reviews" or "conversationally guide the user through…" assumes tools and many
+> turns. In one shot the model can only approximate it. The skills that work well
+> here are rubrics — what to check, what to prefer, how to report — rather than
+> conversation scripts.
+
 ## Sessions
 
 Interactive runs continue the previous conversation for the current repository,
@@ -424,6 +474,7 @@ ask /switch <name>    # switch thread, creating it if new
 ask /write <path> '<prompt>'     # edit that file
 ask /diff  <path> '<prompt>'     # preview that edit
 ask /create <path> '<prompt>'   # write a new file
+ask /skills [term]              # list or search skills
 ask /compact          # summarise the thread into notes, files stay attached
 ```
 
@@ -597,6 +648,7 @@ dropped silently. The footer prints the real token usage returned by the API.
 ## Layout and development
 
 ```
+src/skills.ts         SKILL.md discovery, selection and injection
 src/refs.ts           @ref → paths: exact path, glob, or ranked search
 src/skip.ts           skip rules shared by attachment and search
 src/context.ts        resolved paths → sorted, filtered, capped text blocks

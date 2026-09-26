@@ -26,6 +26,8 @@ export const OPTIONS = {
   "list-sessions": { type: "boolean" },
   write: { type: "string" },
   create: { type: "string" },
+  skill: { type: "string", multiple: true },
+  "list-skills": { type: "boolean" },
   diff: { type: "string" },
   force: { type: "boolean" },
   reset: { type: "boolean" },
@@ -56,6 +58,7 @@ export const VERBS: Readonly<Record<string, string>> = {
   "/write": "write",
   "/diff": "diff",
   "/create": "create",
+  "/skills": "list-skills",
 };
 
 /** Verbs that consume the next positional as their value, e.g. `/switch docs`. */

@@ -84,6 +84,7 @@ test("/verbs complete as the first word only", async () => {
     "/reset",
     "/session",
     "/sessions",
+    "/skills",
     "/switch",
     "/write",
   ]);
@@ -92,6 +93,7 @@ test("/verbs complete as the first word only", async () => {
   assert.deepEqual(await complete(cwd, 1, "ask", "/w"), ["/write"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/d"), ["/diff"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session", "/sessions"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/sk"), ["/skills"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/sw"), ["/switch"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/n"), ["/new"]);
   // Later on the line, a slash is more likely an absolute path than a verb.
@@ -108,6 +110,7 @@ test("an empty first word lists the verbs, so they are discoverable", async () =
     "/reset",
     "/session",
     "/sessions",
+    "/skills",
     "/switch",
     "/write",
   ]);

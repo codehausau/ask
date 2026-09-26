@@ -28,6 +28,16 @@ import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour
 import { gitDiffNoIndex, gitFileState } from "./git.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
+import {
+  discoverSkills,
+  filterSkills,
+  loadSkill,
+  renderSkills,
+  resolveSkill,
+  skillSearchPaths,
+  SkillResolutionError,
+  type LoadedSkill,
+} from "./skills.ts";
 import { startSpinner } from "./spinner.ts";
 import {
   checkCreateRequest,
@@ -64,6 +74,7 @@ import {
   sessionPath,
   sessionRefs,
   sessionScope,
+  sessionSkills,
   sessionTokens,
   sessionUsage,
   type Session,
@@ -86,6 +97,12 @@ Editing a file
   and clean in git (--force overrides), if the file was truncated to fit the
   context, or if the answer hit the token cap.
 
+Skills
+  A skill is a directory with a SKILL.md holding reusable instructions. They are
+  looked for in $ASK_SKILLS_DIR, ./.ask/skills, ./.agents/skills,
+  ~/.config/ask/skills and ~/.claude/skills. Only SKILL.md is read; bundled
+  assets are ignored. The skill is chosen here, never by the model.
+
 Sessions
   Interactive runs continue the previous conversation for this repository,
   so a follow-up needs no @references. Piped runs are always one-shot.
@@ -99,6 +116,7 @@ Sessions
   ask /diff '<prompt>'   preview that edit without writing (alias of --diff)
   ask /create <path> '<prompt>'
                          write a new file; any context is allowed
+  ask /skills [term]     list available skills, no API call
   ask /compact           summarise the thread into notes, keeping files attached
   --no-session           one-shot, ignoring and not touching the thread
 
@@ -128,6 +146,9 @@ Options
       --max-file-bytes <n>  per-file cap before truncation (default 262144)
       --max-total-bytes <n> total context cap (default 1048576)
       --max-files <n>       max files from directory walks (default 200)
+      --skill <name>        prepend a skill's instructions; repeatable,
+                            searched if not an exact name
+      --list-skills         alias of /skills
       --create <path>       alias of /create
       --write               alias of /write
       --diff                alias of /diff
@@ -251,6 +272,7 @@ function printContext(
     question: string;
     stdinText: string;
     system: string;
+    skills: readonly LoadedSkill[];
     session: Session | null;
     palette: Palette;
   },
@@ -270,8 +292,14 @@ function printContext(
   const files = Math.ceil(context.totalBytes / 4);
   const history = sessionTokens(extras.session);
   const question = estimateTokens(extras.question) + estimateTokens(extras.stdinText);
-  const system = estimateTokens(extras.system);
-  const total = files + history + question + system;
+  // Skills are part of the system prompt, but big enough to deserve their own
+  // line: a skill can cost more than the files you attached.
+  const skillTokens = extras.skills.reduce(
+    (total, skill) => total + estimateTokens(skill.body),
+    0,
+  );
+  const system = estimateTokens(extras.system) - skillTokens;
+  const total = files + history + question + system + skillTokens;
 
   process.stdout.write(
     `\n${context.blocks.length} file(s), ${formatBytes(context.totalBytes)}\n\n` +
@@ -279,6 +307,11 @@ function printContext(
       paint.dim(
         `  files     ~${formatCount(files)}\n` +
           (extras.session ? `  history   ~${formatCount(history)}\n` : "") +
+          (extras.skills.length > 0
+            ? `  skills    ~${formatCount(skillTokens)} (${extras.skills
+                .map((skill) => skill.name)
+                .join(", ")})\n`
+            : "") +
           `  question  ~${formatCount(question)}\n` +
           `  system    ~${formatCount(system)}\n`,
       ) +
@@ -432,6 +465,54 @@ async function printSessions(scope: string, active: string, paint: Palette): Pro
   );
 }
 
+/** List skills, optionally filtered, without calling the API. */
+async function printSkills(term: string, paint: Palette): Promise<void> {
+  const roots = skillSearchPaths();
+  const all = await discoverSkills(roots);
+  const shown = filterSkills(all, term);
+
+  if (all.length === 0) {
+    process.stdout.write(
+      `no skills found\n${paint.dim(`looked in:\n${roots.map((root) => `  ${root}`).join("\n")}\n`)}`,
+    );
+    return;
+  }
+  if (shown.length === 0) {
+    process.stdout.write(`no skill matches "${term}" (${all.length} available)\n`);
+    return;
+  }
+
+  const heading = term.trim().length > 0 ? `skills matching "${term}"` : "skills";
+  process.stdout.write(`${paint.bold(heading)}\n\n`);
+  for (const skill of shown) {
+    const description = skill.description.length > 0 ? skill.description : "(no description)";
+    process.stdout.write(
+      `${paint.cyan(skill.name)}\n  ${description}\n` +
+        paint.dim(`  ${skill.file}  ${formatBytes(skill.bytes)}\n`),
+    );
+  }
+  process.stdout.write(
+    paint.dim(`\n${shown.length} of ${all.length} skill(s). Use: ask --skill <name> '<prompt>'\n`),
+  );
+}
+
+/** Resolve and load every requested skill, reporting inexact matches. */
+async function gatherSkills(terms: readonly string[]): Promise<LoadedSkill[]> {
+  if (terms.length === 0) return [];
+
+  const available = await discoverSkills(skillSearchPaths());
+  const loaded: LoadedSkill[] = [];
+  const seen = new Set<string>();
+
+  for (const term of terms) {
+    const summary = resolveSkill(term, available);
+    if (seen.has(summary.name)) continue;
+    seen.add(summary.name);
+    loaded.push(await loadSkill(summary, summary.name === term ? "name" : "search"));
+  }
+  return loaded;
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Record<string, unknown>;
   let positionals: string[];
@@ -486,6 +567,16 @@ async function main(argv: string[]): Promise<number> {
   const envReports = await applyEnvFiles(envCandidates());
 
   const createPath = flag("create");
+  const skillTerms = (values["skill"] as string[] | undefined) ?? [];
+
+  if (bool("list-skills")) {
+    await printSkills(
+      positionals.join(" "),
+      bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout)),
+    );
+    return 0;
+  }
+
   // /write <path> and /diff <path>: the target is named, never inferred.
   const writeTarget = flag("write") ?? flag("diff");
   const writeMode = writeTarget !== undefined;
@@ -681,6 +772,16 @@ async function main(argv: string[]): Promise<number> {
     },
   });
 
+  // Skills carry across a session like @refs do, and are re-read each turn.
+  const carriedSkills = sessionSkills(session).filter((name) => !skillTerms.includes(name));
+  const skills = await gatherSkills([...carriedSkills, ...skillTerms]);
+  if (!bool("quiet") && !bool("json")) {
+    for (const skill of skills) {
+      const how = skill.matched === "search" ? " [search]" : "";
+      status.note(`-- skill ${skill.name}${how}`);
+    }
+  }
+
   const systemFile = flag("system-file");
   const explicitSystem = systemFile
     ? await readFile(systemFile, "utf8")
@@ -695,11 +796,15 @@ async function main(argv: string[]): Promise<number> {
         ? WRITE_SYSTEM
         : DEFAULT_SYSTEM);
 
+  const skillText = renderSkills(skills);
+  const systemWithSkills = skillText.length > 0 ? `${system}\n\n${skillText}` : system;
+
   if (bool("show-context")) {
     printContext(context, {
       question,
       stdinText,
-      system,
+      system: systemWithSkills,
+      skills,
       session,
       palette: bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout)),
     });
@@ -772,7 +877,7 @@ async function main(argv: string[]): Promise<number> {
   const request = buildRequest({
     prompt,
     model: flag("model") ?? process.env["ASK_MODEL"] ?? DEFAULT_MODEL,
-    system,
+    system: systemWithSkills,
     history: sessionMessages(history),
     maxTokens: numberOption(flag("max-tokens"), "max-tokens"),
     temperature: numberOption(flag("temperature"), "temperature"),
@@ -938,6 +1043,7 @@ async function main(argv: string[]): Promise<number> {
       name: sessionName,
       question: question || (stdinText ? "(piped input)" : ""),
       refs: turnRefs,
+      skills: skills.map((skill) => skill.name),
       answer: writeSummary ?? result.text,
       usage: result.usage,
     });
@@ -979,9 +1085,11 @@ async function main(argv: string[]): Promise<number> {
   if (!bool("quiet")) {
     // Implicit state must be visible: say which thread and which turn.
     const thread = saved ? `thread ${sessionLabel(saved)} turn ${saved.turns.length} | ` : "";
+    const skillNote =
+      skills.length > 0 ? `skill ${skills.map((skill) => skill.name).join("+")} | ` : "";
     status.blank();
     status.note(
-      `-- ${result.model} | ${thread}${context.blocks.length} file(s) ` +
+      `-- ${result.model} | ${thread}${skillNote}${context.blocks.length} file(s) ` +
         `${formatBytes(context.totalBytes)} | tokens in ${result.usage.input ?? "?"} ` +
         `out ${result.usage.output ?? "?"}`,
     );
@@ -1016,6 +1124,17 @@ try {
 
   if (error instanceof ConfigError) {
     fail(`ask: ${error.message}`);
+    process.exitCode = 2;
+  } else if (error instanceof SkillResolutionError) {
+    fail(`ask: ${error.message}`);
+    for (const candidate of error.candidates.slice(0, 10)) {
+      hint(`      ${candidate}`);
+    }
+    hint(
+      error.candidates.length > 0
+        ? "      name one of them exactly"
+        : "      'ask /skills' lists what is available",
+    );
     process.exitCode = 2;
   } else if (error instanceof RefResolutionError) {
     fail(`ask: ${error.message}`);

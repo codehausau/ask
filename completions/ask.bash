@@ -26,16 +26,17 @@ _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --create \
 --diff --dry-run --file \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
---list-sessions --max-total-bytes --model --new --no-color --no-session \
+--list-sessions --list-skills --max-total-bytes --model --new --no-color \
+--no-session \
 --quiet --reset \
 --session \
---force --session-max-tokens --show-context --show-session --switch \
+--force --session-max-tokens --show-context --show-session --skill --switch \
 --system --write \
 --system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
 
 # Chat-style verbs, accepted as the first word after `ask`.
-_ASK_VERBS="/compact /create /diff /new /reset /session /sessions /switch /write"
+_ASK_VERBS="/compact /create /diff /new /reset /session /sessions /skills /switch /write"
 
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
@@ -152,6 +153,24 @@ _ask_complete() {
         _ask_pick "$cur" "" && return 0
       fi
       _ask_paths "$cur" ""
+      return 0
+      ;;
+    --skill)
+      # Skill names from the same directories the CLI searches.
+      local dir names=()
+      for dir in ${ASK_SKILLS_DIR//:/ } ./.ask/skills ./.agents/skills \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/ask/skills" "$HOME/.claude/skills"; do
+        [ -d "$dir" ] || continue
+        local entry
+        for entry in "$dir"/*/SKILL.md; do
+          [ -f "$entry" ] || continue
+          entry=${entry%/SKILL.md}
+          names+=("${entry##*/}")
+        done
+      done
+      mapfile -t COMPREPLY < <(
+        printf '%s\n' "${names[@]}" | LC_ALL=C sort -u | grep -i -- "^${cur}" || true
+      )
       return 0
       ;;
     --token-field)

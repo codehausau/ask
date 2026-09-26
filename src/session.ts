@@ -32,6 +32,8 @@ export interface SessionTurn {
   readonly question: string;
   /** References as typed, re-resolved on later turns. */
   readonly refs: readonly string[];
+  /** Skill names in effect, re-read from disk on later turns. */
+  readonly skills?: readonly string[];
   readonly answer: string;
   /** Set when this turn is a `/compact` summary standing in for earlier ones. */
   readonly summary?: boolean;
@@ -171,6 +173,15 @@ export async function resetSession(key: SessionKey): Promise<boolean> {
   return existed;
 }
 
+/** Skill names from every turn, in order of first appearance, deduplicated. */
+export function sessionSkills(session: Session | null): string[] {
+  const seen = new Set<string>();
+  for (const turn of session?.turns ?? []) {
+    for (const name of turn.skills ?? []) seen.add(name);
+  }
+  return [...seen];
+}
+
 /** References from every turn, in order of first appearance, deduplicated. */
 export function sessionRefs(session: Session | null): string[] {
   const seen = new Set<string>();
@@ -244,6 +255,7 @@ export function applyCompaction(
         at: timestamp,
         question: `(compacted ${session.turns.length} turn(s))`,
         refs: sessionRefs(session),
+        ...(sessionSkills(session).length > 0 ? { skills: sessionSkills(session) } : {}),
         answer: summary,
         summary: true,
         covers: session.turns.reduce((total, turn) => total + (turn.covers ?? 1), 0),
@@ -297,6 +309,7 @@ export interface AppendOptions {
   readonly name: string;
   readonly question: string;
   readonly refs: readonly string[];
+  readonly skills?: readonly string[];
   readonly answer: string;
   readonly usage?: { readonly input: number | null; readonly output: number | null };
   readonly now?: Date;
@@ -309,6 +322,7 @@ export function appendTurn(session: Session | null, options: AppendOptions): Ses
     at: timestamp,
     question: options.question,
     refs: [...options.refs],
+    ...(options.skills && options.skills.length > 0 ? { skills: [...options.skills] } : {}),
     answer: options.answer,
     ...(options.usage ? { usage: options.usage } : {}),
   };

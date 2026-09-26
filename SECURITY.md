@@ -37,6 +37,22 @@ will *not* do.
 - **Secret detection.** The credential filter is filename-based. It will not
   catch a key pasted into `src/config.ts`.
 
+## Skills
+
+`--skill <name>` reads a `SKILL.md` from disk and appends it to the system
+prompt. Two things follow from that:
+
+- **A skill changes how the model behaves**, so treat a skills directory like
+  code you run: review a skill before using it, particularly one you did not
+  write. `ask --dry-run` prints the exact system prompt that will be sent.
+- **Only `SKILL.md` is read.** Bundled scripts and assets are never executed or
+  uploaded; nothing in a skill can cause `ask` to run a command. Skills are
+  chosen by the CLI, never by the model — a model that could load a skill on
+  demand would be making a tool call.
+
+Skills are capped at 128 KB each, and the selection is reported on stderr so an
+inexact match cannot silently change the instructions.
+
 ## Session data at rest
 
 Interactive runs keep a conversation thread so follow-ups need no `@references`.
