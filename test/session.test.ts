@@ -21,6 +21,7 @@ import {
   sessionPath,
   sessionRefs,
   sessionTokens,
+  sessionUsage,
   stateDir,
   type Session,
 } from "../src/session.ts";
@@ -203,6 +204,82 @@ test("appendTurn preserves createdAt and advances updatedAt", () => {
 test("sessionLabel uses the repo name by default, the given name otherwise", () => {
   assert.equal(sessionLabel({ name: "default", scope: "/workspaces/tak/takbot" }), "takbot");
   assert.equal(sessionLabel({ name: "review", scope: "/workspaces/tak/takbot" }), "review");
+});
+
+test("usage is recorded per turn and totalled across the thread", () => {
+  const first = appendTurn(null, {
+    scope: "/repo",
+    name: "default",
+    question: "q1",
+    refs: [],
+    answer: "a1",
+    usage: { input: 1200, output: 80 },
+  });
+  const second = appendTurn(first, {
+    scope: "/repo",
+    name: "default",
+    question: "q2",
+    refs: [],
+    answer: "a2",
+    usage: { input: 1500, output: 120 },
+  });
+
+  assert.deepEqual(second.turns[0]?.usage, { input: 1200, output: 80 });
+  assert.deepEqual(sessionUsage(second), {
+    input: 2700,
+    output: 200,
+    reported: 2,
+    turns: 2,
+  });
+});
+
+test("a turn without reported usage is counted, not invented", () => {
+  const withUsage = appendTurn(null, {
+    scope: "/repo",
+    name: "default",
+    question: "q1",
+    refs: [],
+    answer: "a1",
+    usage: { input: 100, output: 10 },
+  });
+  // Endpoints are not obliged to report usage; nulls must not become zeros
+  // that look like a complete total.
+  const withoutUsage = appendTurn(withUsage, {
+    scope: "/repo",
+    name: "default",
+    question: "q2",
+    refs: [],
+    answer: "a2",
+  });
+
+  assert.equal(withoutUsage.turns[1]?.usage, undefined);
+  const spent = sessionUsage(withoutUsage);
+  assert.equal(spent.input, 100);
+  assert.equal(spent.reported, 1);
+  assert.equal(spent.turns, 2, "caller can see the total is partial");
+
+  const nullUsage = appendTurn(null, {
+    scope: "/repo",
+    name: "default",
+    question: "q",
+    refs: [],
+    answer: "a",
+    usage: { input: null, output: null },
+  });
+  assert.deepEqual(sessionUsage(nullUsage), { input: 0, output: 0, reported: 1, turns: 1 });
+  assert.deepEqual(sessionUsage(null), { input: 0, output: 0, reported: 0, turns: 0 });
+});
+
+test("history tokens count what is actually resent", () => {
+  const thread = session("/repo", [
+    { at: "1", question: "hello there", refs: [], answer: "general kenobi" },
+  ]);
+  const expected = sessionMessages(thread).reduce(
+    (total, message) => total + estimateTokens(message.content),
+    0,
+  );
+  assert.equal(sessionTokens(thread), expected);
+  assert.equal(sessionTokens(null), 0);
 });
 
 test("compaction replaces the thread but keeps every attached file", () => {

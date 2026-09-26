@@ -287,6 +287,37 @@ ask /session          # show the thread, no API call
 ask /compact          # summarise the thread into notes, files stay attached
 ```
 
+### Seeing what it costs
+
+Three views, none of which call the API:
+
+```console
+$ ask --show-context '@src' 'follow up'   # what the next request would cost
+...
+estimated tokens for the next request
+  files     ~3314
+  history   ~20
+  question  ~4
+  system    ~34
+  total     ~3372
+
+$ ask /session                            # thread size and spend so far
+thread ask  2 turn(s)
+history ~20 tokens, resent every turn
+spent   200 in / 40 out
+```
+
+After every answer the footer reports the real numbers from the endpoint, and
+from turn 2 onward the running thread total:
+
+```
+-- gpt-4o-mini | thread ask turn 2 | 1 file(s) 2.3 KB | tokens in 1502 out 260
+-- thread total: 2.7k in / 340 out over 2 turns (~820 history resent next turn)
+```
+
+`spent` counts only turns where the endpoint reported usage, and says so
+(`2/3 turns`) when some did not — a partial total is never passed off as complete.
+
 `--new` / `--reset`, `--show-session` and `--no-session` are flag aliases for
 scripting. It is still **one request per invocation** — a session only decides
 what goes into that request. No tools, no loop.

@@ -37,6 +37,8 @@ export interface SessionTurn {
   readonly summary?: boolean;
   /** How many turns the summary replaced. */
   readonly covers?: number;
+  /** Tokens the endpoint actually billed for this turn, when it reported them. */
+  readonly usage?: { readonly input: number | null; readonly output: number | null };
 }
 
 export interface Session {
@@ -296,6 +298,7 @@ export interface AppendOptions {
   readonly question: string;
   readonly refs: readonly string[];
   readonly answer: string;
+  readonly usage?: { readonly input: number | null; readonly output: number | null };
   readonly now?: Date;
 }
 
@@ -307,6 +310,7 @@ export function appendTurn(session: Session | null, options: AppendOptions): Ses
     question: options.question,
     refs: [...options.refs],
     answer: options.answer,
+    ...(options.usage ? { usage: options.usage } : {}),
   };
 
   return {
@@ -317,4 +321,28 @@ export function appendTurn(session: Session | null, options: AppendOptions): Ses
     updatedAt: timestamp,
     turns: [...(session?.turns ?? []), turn],
   };
+}
+
+export interface SessionUsage {
+  /** Tokens billed across the thread, as reported by the endpoint. */
+  readonly input: number;
+  readonly output: number;
+  /** Turns that reported usage, so partial data is not mistaken for a total. */
+  readonly reported: number;
+  readonly turns: number;
+}
+
+/** Cumulative billed usage for a thread. */
+export function sessionUsage(session: Session | null): SessionUsage {
+  let input = 0;
+  let output = 0;
+  let reported = 0;
+
+  for (const turn of session?.turns ?? []) {
+    if (!turn.usage) continue;
+    reported += 1;
+    input += turn.usage.input ?? 0;
+    output += turn.usage.output ?? 0;
+  }
+  return { input, output, reported, turns: session?.turns.length ?? 0 };
 }

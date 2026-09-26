@@ -44,6 +44,7 @@ import {
   sessionRefs,
   sessionScope,
   sessionTokens,
+  sessionUsage,
   type Session,
 } from "./session.ts";
 
@@ -195,7 +196,14 @@ function resolutionNotes(context: ContextResult, cwd: string): string[] {
   return notes;
 }
 
-function printContext(context: ContextResult): void {
+/**
+ * What the next request would cost, broken down. Shown by --show-context, which
+ * never calls the API, so this is the safe way to check before spending.
+ */
+function printContext(
+  context: ContextResult,
+  extras: { question: string; stdinText: string; system: string; session: Session | null },
+): void {
   for (const note of resolutionNotes(context, process.cwd())) {
     process.stdout.write(`match   ${note}\n`);
   }
@@ -206,10 +214,26 @@ function printContext(context: ContextResult): void {
   for (const item of context.skipped) {
     process.stdout.write(`skip    ${item.path}  (${item.reason})\n`);
   }
+
+  const files = Math.ceil(context.totalBytes / 4);
+  const history = sessionTokens(extras.session);
+  const question = estimateTokens(extras.question) + estimateTokens(extras.stdinText);
+  const system = estimateTokens(extras.system);
+  const total = files + history + question + system;
+
   process.stdout.write(
-    `\n${context.blocks.length} file(s), ${formatBytes(context.totalBytes)}, ` +
-      `~${Math.ceil(context.totalBytes / 4)} tokens\n`,
+    `\n${context.blocks.length} file(s), ${formatBytes(context.totalBytes)}\n\n` +
+      `estimated tokens for the next request\n` +
+      `  files     ~${formatCount(files)}\n` +
+      (extras.session ? `  history   ~${formatCount(history)}\n` : "") +
+      `  question  ~${formatCount(question)}\n` +
+      `  system    ~${formatCount(system)}\n` +
+      `  total     ~${formatCount(total)}\n`,
   );
+}
+
+function formatCount(value: number): string {
+  return value >= 10_000 ? `${(value / 1000).toFixed(1)}k` : String(value);
 }
 
 /** Print a session without calling the API. */
@@ -219,10 +243,15 @@ function printSession(session: Session | null, file: string): void {
     return;
   }
 
+  const spent = sessionUsage(session);
+  const partial = spent.reported < spent.turns ? ` (${spent.reported}/${spent.turns} turns)` : "";
+
   process.stdout.write(
     `thread ${sessionLabel(session)}  ${session.turns.length} turn(s)\n` +
       `scope   ${session.scope}\n` +
       `updated ${session.updatedAt}\n` +
+      `history ~${formatCount(sessionTokens(session))} tokens, resent every turn\n` +
+      `spent   ${formatCount(spent.input)} in / ${formatCount(spent.output)} out${partial}\n` +
       `file    ${file}\n\n`,
   );
 
@@ -247,7 +276,8 @@ function printSession(session: Session | null, file: string): void {
   });
 
   process.stdout.write(
-    `\n~${total} tokens of history; file contents are re-read fresh each turn\n`,
+    `\n~${total} tokens of question-and-answer text; ` +
+      `file contents are re-read fresh each turn\n`,
   );
 }
 
@@ -410,8 +440,13 @@ async function main(argv: string[]): Promise<number> {
     },
   });
 
+  const systemFile = flag("system-file");
+  const system = systemFile
+    ? await readFile(systemFile, "utf8")
+    : (flag("system") ?? process.env["ASK_SYSTEM"] ?? DEFAULT_SYSTEM);
+
   if (bool("show-context")) {
-    printContext(context);
+    printContext(context, { question, stdinText, system, session });
     return 0;
   }
 
@@ -421,11 +456,6 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(`-- ${note}\n`);
     }
   }
-
-  const systemFile = flag("system-file");
-  const system = systemFile
-    ? await readFile(systemFile, "utf8")
-    : (flag("system") ?? process.env["ASK_SYSTEM"] ?? DEFAULT_SYSTEM);
 
   const prompt = renderPrompt(question, context, stdinText);
 
@@ -478,6 +508,7 @@ async function main(argv: string[]): Promise<number> {
       question: question || (stdinText ? "(piped input)" : ""),
       refs: turnRefs,
       answer: result.text,
+      usage: result.usage,
     });
     await saveSession(saved);
   }
@@ -521,6 +552,15 @@ async function main(argv: string[]): Promise<number> {
         `${formatBytes(context.totalBytes)} | tokens in ${result.usage.input ?? "?"} ` +
         `out ${result.usage.output ?? "?"}\n`,
     );
+    if (saved && saved.turns.length > 1) {
+      // Implicit context compounds, so show what the thread has cost so far.
+      const spent = sessionUsage(saved);
+      process.stderr.write(
+        `-- thread total: ${formatCount(spent.input)} in / ` +
+          `${formatCount(spent.output)} out over ${spent.turns} turns ` +
+          `(~${formatCount(sessionTokens(saved))} history resent next turn)\n`,
+      );
+    }
     if (result.finishReason === "length") {
       process.stderr.write("-- warning: answer hit the token cap (--max-tokens)\n");
     }

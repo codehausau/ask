@@ -256,6 +256,48 @@ test("--no-session and ASK_SESSION=0 opt out entirely", async () => {
   }
 });
 
+test("--show-context breaks down the next request and calls nothing", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "tok", "@widget.ts first"], base);
+    const before = endpoint.requests.length;
+
+    const output = await runCli(["--session", "tok", "--show-context", "follow up"], base);
+    assert.equal(endpoint.requests.length, before, "no request issued");
+
+    assert.match(output, /estimated tokens for the next request/);
+    assert.match(output, /files\s+~\d+/);
+    assert.match(output, /history\s+~\d+/, "session history is included in the estimate");
+    assert.match(output, /question\s+~\d+/);
+    assert.match(output, /total\s+~\d+/);
+    // The carried file is listed even though no @ref was typed.
+    assert.match(output, /attach\s+widget\.ts/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/session reports history size and cumulative spend", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "spend", "@widget.ts first"], base);
+    await runCli(["--session", "spend", "second"], base);
+
+    const output = await runCli(["/session", "--session", "spend"], base);
+    // The stub reports 10 in / 2 out per turn.
+    assert.match(output, /spent\s+20 in \/ 4 out/);
+    assert.match(output, /history\s+~\d+ tokens, resent every turn/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("/compact makes exactly one request and replaces the history with it", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
