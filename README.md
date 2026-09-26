@@ -383,6 +383,9 @@ previews the change without touching anything (`--write` and `--diff` are the
 flag aliases). **The target is named, never inferred** — the file is attached
 automatically, and any `@refs` you add are read-only references:
 
+The path may be written `@src/env.ts` if that is the habit; the sigil is
+accepted and stripped.
+
 ```console
 $ ask /write src/env.ts '@src/skip.ts match the comment style in skip.ts'
 
@@ -542,7 +545,7 @@ ask /new              # start a fresh thread and stop
 ask /session          # show the current thread, no API call
 ask /sessions         # list this repository's threads
 ask /switch <name>    # switch thread, creating it if new
-ask /write <path> '<prompt>'     # edit that file
+ask /write <path> '<prompt>'     # edit that file (@path accepted too)
 ask /diff  <path> '<prompt>'     # preview that edit
 ask /create <path> '<prompt>'   # write a new file
 ask /skills [term]              # list or search skills
