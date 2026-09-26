@@ -22,6 +22,8 @@ export const OPTIONS = {
   "install-completion": { type: "boolean" },
   apply: { type: "boolean" },
   "no-color": { type: "boolean" },
+  switch: { type: "string" },
+  "list-sessions": { type: "boolean" },
   reset: { type: "boolean" },
   session: { type: "string" },
   "show-session": { type: "boolean" },
@@ -44,8 +46,13 @@ export const VERBS: Readonly<Record<string, string>> = {
   "/new": "new",
   "/reset": "new",
   "/session": "show-session",
+  "/sessions": "list-sessions",
   "/compact": "compact",
+  "/switch": "switch",
 };
+
+/** Verbs that consume the next positional as their value, e.g. `/switch docs`. */
+export const VERBS_WITH_VALUE: ReadonlySet<string> = new Set(["/switch"]);
 
 /** Every accepted flag spelling, e.g. `--model` and `-m`. */
 export function flagSpellings(): string[] {

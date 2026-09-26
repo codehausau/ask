@@ -10,7 +10,13 @@ import {
   applyCompaction,
   backupSession,
   buildCompactionPrompt,
+  clearCurrentSession,
   DEFAULT_SESSION_NAME,
+  isValidSessionName,
+  listSessions,
+  readCurrentSession,
+  resolveSessionName,
+  writeCurrentSession,
   estimateTokens,
   loadSession,
   pruneSession,
@@ -376,6 +382,108 @@ test("reset also removes the pre-compaction backup", async () => {
 
   assert.equal(await resetSession(key), true);
   await assert.rejects(() => stat(backup), /ENOENT/, "backup cleared too");
+});
+
+test("thread names are validated as a single safe filename component", () => {
+  for (const name of ["default", "review", "docs-2", "v1.2", "a_b", "A".repeat(64)]) {
+    assert.equal(isValidSessionName(name), true, name);
+  }
+  for (const name of ["", " ", ".", "..", "a/b", "a\\b", "with space", "A".repeat(65), "sub/dir"]) {
+    assert.equal(isValidSessionName(name), false, JSON.stringify(name));
+  }
+});
+
+test("the switched-to thread persists per scope", async () => {
+  const { env } = await isolatedState();
+
+  assert.equal(await readCurrentSession("/repo/one", env), null, "never switched");
+
+  await writeCurrentSession("/repo/one", "review", env);
+  assert.equal(await readCurrentSession("/repo/one", env), "review");
+  assert.equal(await readCurrentSession("/repo/two", env), null, "scoped per repository");
+
+  await writeCurrentSession("/repo/one", "docs", env);
+  assert.equal(await readCurrentSession("/repo/one", env), "docs", "switching again");
+
+  await clearCurrentSession("/repo/one", env);
+  assert.equal(await readCurrentSession("/repo/one", env), null);
+});
+
+test("writeCurrentSession refuses a name that would escape the directory", async () => {
+  const { env } = await isolatedState();
+  await assert.rejects(() => writeCurrentSession("/repo", "../evil", env), /invalid thread name/);
+});
+
+test("name precedence: --session, then ASK_SESSION, then switched, then default", async () => {
+  const { env } = await isolatedState();
+  await writeCurrentSession("/repo", "switched", env);
+
+  assert.equal(await resolveSessionName("/repo", "flagged", env), "flagged", "flag wins");
+  assert.equal(
+    await resolveSessionName("/repo", undefined, { ...env, ASK_SESSION: "fromenv" }),
+    "fromenv",
+    "env beats the pointer",
+  );
+  assert.equal(await resolveSessionName("/repo", undefined, env), "switched");
+  assert.equal(
+    await resolveSessionName("/nowhere", undefined, env),
+    DEFAULT_SESSION_NAME,
+    "unswitched scope",
+  );
+
+  // ASK_SESSION=0 is the disable switch, never a thread called "0".
+  assert.equal(
+    await resolveSessionName("/repo", undefined, { ...env, ASK_SESSION: "0" }),
+    "switched",
+  );
+  // A nonsense value falls through rather than creating a junk thread.
+  assert.equal(
+    await resolveSessionName("/repo", undefined, { ...env, ASK_SESSION: "not a name" }),
+    "switched",
+  );
+});
+
+test("listSessions finds this scope's threads, newest first, ignoring backups", async () => {
+  const { env } = await isolatedState();
+
+  const build = (scope: string, name: string, updatedAt: string, turns: number): Session => ({
+    version: 1,
+    name,
+    scope,
+    createdAt: "2026-09-26T00:00:00.000Z",
+    updatedAt,
+    turns: Array.from({ length: turns }, (_unused, index) => ({
+      at: updatedAt,
+      question: `q${index}`,
+      refs: [],
+      answer: `a${index}`,
+    })),
+  });
+
+  const older = build("/repo/one", "default", "2026-09-26T01:00:00.000Z", 1);
+  const newer = build("/repo/one", "review", "2026-09-26T05:00:00.000Z", 3);
+  const elsewhere = build("/repo/two", "default", "2026-09-26T09:00:00.000Z", 9);
+
+  await saveSession(older, env);
+  await saveSession(newer, env);
+  await saveSession(elsewhere, env);
+  await backupSession(older, env); // a .pre-compact.json snapshot
+
+  const threads = await listSessions("/repo/one", env);
+  assert.deepEqual(
+    threads.map((thread) => thread.name),
+    ["review", "default"],
+    "most recently updated first, other repositories excluded",
+  );
+  assert.equal(threads[0]?.turns, 3);
+  assert.ok((threads[0]?.historyTokens ?? 0) > 0);
+  assert.equal(
+    threads.some((thread) => thread.file.includes("pre-compact")),
+    false,
+    "backups are not threads",
+  );
+
+  assert.deepEqual(await listSessions("/repo/none", env), []);
 });
 
 test("a session file inside a repo can never be attached", async () => {

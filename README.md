@@ -325,9 +325,47 @@ $ ask 'now explain the token field logic'
 ```bash
 ask /new '<prompt>'   # start a fresh thread, then ask
 ask /new              # start a fresh thread and stop
-ask /session          # show the thread, no API call
+ask /session          # show the current thread, no API call
+ask /sessions         # list this repository's threads
+ask /switch <name>    # switch thread, creating it if new
 ask /compact          # summarise the thread into notes, files stay attached
 ```
+
+### Switching threads
+
+Keep separate conversations for separate lines of work in the same repository:
+
+```console
+$ ask /switch refactor
+-- switched to thread refactor (new)
+
+$ ask 'how would I split this module?'        # goes to `refactor`
+
+$ ask /sessions
+threads for ask
+
+* refactor               1 turn(s)  ~11 tokens  2026-09-26T02:58:41.479Z
+  default                4 turn(s)  ~820 tokens  2026-09-26T02:41:03.012Z
+
+* = active. Switch with 'ask /switch <name>'.
+
+$ ask /switch default
+-- switched to thread default (4 turn(s))
+```
+
+`/switch` persists per repository, so a new terminal in the same repo continues
+where you left off. Name precedence, highest first:
+
+| Source | Scope |
+| --- | --- |
+| `--session <name>` | this invocation only |
+| `ASK_SESSION=<name>` | this shell — useful for two terminals on two threads |
+| `/switch <name>` | this repository, until switched again |
+| `default` | when none of the above apply |
+
+`ASK_SESSION=0` still means "no sessions at all" rather than a thread named `0`.
+Names are restricted to letters, digits, dot, dash and underscore, since they
+become a filename component.
 
 ### Seeing what it costs
 

@@ -76,9 +76,17 @@ test("flags complete on a leading dash", async () => {
 
 test("/verbs complete as the first word only", async () => {
   const cwd = await fixture();
-  assert.deepEqual(await complete(cwd, 1, "ask", "/"), ["/compact", "/new", "/reset", "/session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/"), [
+    "/compact",
+    "/new",
+    "/reset",
+    "/session",
+    "/sessions",
+    "/switch",
+  ]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/c"), ["/compact"]);
-  assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session", "/sessions"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/sw"), ["/switch"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/n"), ["/new"]);
   // Later on the line, a slash is more likely an absolute path than a verb.
   assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", "/nonexistent-xyz"), []);
@@ -86,7 +94,14 @@ test("/verbs complete as the first word only", async () => {
 
 test("an empty first word lists the verbs, so they are discoverable", async () => {
   const cwd = await fixture();
-  assert.deepEqual(await complete(cwd, 1, "ask", ""), ["/compact", "/new", "/reset", "/session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", ""), [
+    "/compact",
+    "/new",
+    "/reset",
+    "/session",
+    "/sessions",
+    "/switch",
+  ]);
   // Mid-question, TAB stays silent rather than suggesting verbs.
   assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", ""), []);
 });

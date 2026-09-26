@@ -28,16 +28,19 @@ import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import { startSpinner } from "./spinner.ts";
-import { OPTIONS, VERBS } from "./options.ts";
+import { OPTIONS, VERBS, VERBS_WITH_VALUE } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
   appendTurn,
   applyCompaction,
+  isValidSessionName,
+  listSessions,
+  resolveSessionName,
+  writeCurrentSession,
   backupSession,
   buildCompactionPrompt,
   COMPACT_SYSTEM,
   DEFAULT_SESSION_MAX_TOKENS,
-  DEFAULT_SESSION_NAME,
   DEFAULT_SESSION_TTL_MS,
   estimateTokens,
   loadSession,
@@ -70,6 +73,8 @@ Sessions
   ask /new '<prompt>'    start a fresh thread, then ask
   ask /new               start a fresh thread and stop
   ask /session           show the current thread, no API call
+  ask /sessions          list the threads for this repository
+  ask /switch <name>     switch to a thread, creating it if new
   ask /compact           summarise the thread into notes, keeping files attached
   --no-session           one-shot, ignoring and not touching the thread
 
@@ -103,9 +108,12 @@ Options
       --include-secrets     do not skip .env / *.pem / key-ish files
       --new, --reset        alias of /new
       --show-session        alias of /session
+      --list-sessions       alias of /sessions
+      --switch <name>       alias of /switch
       --compact             alias of /compact
       --no-session          do not read or write the thread
-      --session <name>      use a named thread (also forces sessions on)
+      --session <name>      use a named thread for this run (forces sessions on)
+                            precedence: --session, ASK_SESSION, /switch, default
       --session-max-tokens <n>
                             prune oldest turns past this budget (default ${DEFAULT_SESSION_MAX_TOKENS})
       --show-context        print what would be attached, then exit
@@ -370,6 +378,32 @@ function statusWriter(palette: Palette) {
   };
 }
 
+/** List every thread for this scope, marking the active one. */
+async function printSessions(scope: string, active: string, paint: Palette): Promise<void> {
+  const threads = await listSessions(scope);
+
+  if (threads.length === 0) {
+    process.stdout.write(
+      `no threads yet for ${paint.bold(path.basename(scope))}\n` +
+        paint.dim("start one by asking something, or 'ask /switch <name>'\n"),
+    );
+    return;
+  }
+
+  process.stdout.write(`threads for ${paint.bold(path.basename(scope))}\n\n`);
+  for (const thread of threads) {
+    const marker = thread.name === active ? paint.cyan("*") : " ";
+    process.stdout.write(
+      `${marker} ${thread.name.padEnd(20)} ${String(thread.turns).padStart(3)} turn(s)  ` +
+        paint.dim(`~${thread.historyTokens} tokens  ${thread.updatedAt}`) +
+        "\n",
+    );
+  }
+  process.stdout.write(
+    paint.dim(`\n* = active. Switch with 'ask /switch <name>'.\n`),
+  );
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Record<string, unknown>;
   let positionals: string[];
@@ -381,11 +415,22 @@ async function main(argv: string[]): Promise<number> {
     throw new UsageError(error instanceof Error ? error.message : String(error));
   }
 
-  // A leading /verb maps onto the flag of the same name.
+  // A leading /verb maps onto the flag of the same name. A few take a value,
+  // which is the next positional: `ask /switch docs`.
   const firstPositional = positionals[0];
   if (firstPositional !== undefined && firstPositional in VERBS) {
-    values[VERBS[firstPositional]!] = true;
-    positionals = positionals.slice(1);
+    const target = VERBS[firstPositional]!;
+    if (VERBS_WITH_VALUE.has(firstPositional)) {
+      const value = positionals[1];
+      if (value === undefined || value.startsWith("@")) {
+        throw new UsageError(`${firstPositional} needs a name, e.g. ${firstPositional} review`);
+      }
+      values[target] = value;
+      positionals = positionals.slice(2);
+    } else {
+      values[target] = true;
+      positionals = positionals.slice(1);
+    }
   }
 
   const flag = (name: string): string | undefined => values[name] as string | undefined;
@@ -418,15 +463,42 @@ async function main(argv: string[]): Promise<number> {
 
   // Sessions are implicit for interactive runs only: a piped or scripted run
   // must stay reproducible. `--session <name>` forces them on regardless.
-  const sessionName = flag("session") ?? DEFAULT_SESSION_NAME;
   const sessionsDisabled = bool("no-session") || process.env["ASK_SESSION"] === "0";
+  const switchTo = flag("switch");
   const sessionsOn =
     !sessionsDisabled && (process.stdout.isTTY === true || flag("session") !== undefined);
 
   const needsScope =
-    sessionsOn || bool("new") || bool("show-session") || bool("compact");
+    sessionsOn ||
+    bool("new") ||
+    bool("show-session") ||
+    bool("list-sessions") ||
+    bool("compact") ||
+    switchTo !== undefined;
   const scope = needsScope ? await sessionScope(process.cwd()) : process.cwd();
+
+  if (switchTo !== undefined) {
+    if (!isValidSessionName(switchTo)) {
+      throw new UsageError(
+        `invalid thread name "${switchTo}": letters, digits, dot, dash, underscore`,
+      );
+    }
+    await writeCurrentSession(scope, switchTo);
+    const target = await loadSession({ scope, name: switchTo }, sessionTtlMs());
+    status.note(
+      target
+        ? `-- switched to thread ${switchTo} (${target.turns.length} turn(s))`
+        : `-- switched to thread ${switchTo} (new)`,
+    );
+  }
+
+  const sessionName = await resolveSessionName(scope, flag("session"));
   const sessionKey = { scope, name: sessionName };
+
+  if (bool("list-sessions")) {
+    await printSessions(scope, sessionName, colour);
+    return 0;
+  }
 
   if (bool("new")) {
     const removed = await resetSession(sessionKey);
@@ -521,8 +593,8 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (turnRefs.length === 0 && !question && !stdinText) {
-    // `ask /new` on its own is a complete command, not a usage error.
-    if (bool("new")) return 0;
+    // `ask /new` or `ask /switch x` on their own are complete commands.
+    if (bool("new") || switchTo !== undefined) return 0;
     throw new UsageError("nothing to ask: give a prompt, an @path, or pipe stdin");
   }
 

@@ -13,7 +13,7 @@
 //     never be attached to a later prompt.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -345,4 +345,118 @@ export function sessionUsage(session: Session | null): SessionUsage {
     output += turn.usage.output ?? 0;
   }
   return { input, output, reported, turns: session?.turns.length ?? 0 };
+}
+
+/** Thread names must be safe as a single filename component and easy to type. */
+const VALID_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+
+export function isValidSessionName(name: string): boolean {
+  return VALID_NAME.test(name) && name !== "." && name !== "..";
+}
+
+/** Pointer file recording which thread a scope is currently on. */
+export function currentPointerPath(scope: string, env: NodeJS.ProcessEnv = process.env): string {
+  const digest = createHash("sha256").update(scope).digest("hex").slice(0, 16);
+  return path.join(stateDir(env), "current", `${digest}.txt`);
+}
+
+/** The thread this scope was switched to, or null if never switched. */
+export async function readCurrentSession(
+  scope: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
+  try {
+    const name = (await readFile(currentPointerPath(scope, env), "utf8")).trim();
+    return isValidSessionName(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeCurrentSession(
+  scope: string,
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (!isValidSessionName(name)) {
+    throw new Error(`invalid thread name "${name}": use letters, digits, dot, dash, underscore`);
+  }
+  const file = currentPointerPath(scope, env);
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, `${name}\n`, { mode: 0o600 });
+}
+
+export async function clearCurrentSession(
+  scope: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  await rm(currentPointerPath(scope, env), { force: true });
+}
+
+/**
+ * Which thread to use, in order: the --session flag, then ASK_SESSION, then the
+ * switched-to thread for this scope, then "default".
+ */
+export async function resolveSessionName(
+  scope: string,
+  flagValue: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  if (flagValue !== undefined) return flagValue;
+
+  const fromEnv = env["ASK_SESSION"];
+  // "0" is the disable switch, not a thread name.
+  if (fromEnv !== undefined && fromEnv !== "0" && isValidSessionName(fromEnv)) return fromEnv;
+
+  return (await readCurrentSession(scope, env)) ?? DEFAULT_SESSION_NAME;
+}
+
+export interface SessionSummary {
+  readonly name: string;
+  readonly turns: number;
+  readonly updatedAt: string;
+  readonly historyTokens: number;
+  readonly file: string;
+}
+
+/**
+ * Every thread belonging to `scope`. Files are named by hash, so the directory
+ * is scanned and each thread's own record of its scope is what filters — no
+ * separate index to fall out of step.
+ */
+export async function listSessions(
+  scope: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SessionSummary[]> {
+  const dir = path.join(stateDir(env), "sessions");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const summaries: SessionSummary[] = [];
+  for (const entry of entries) {
+    // Skip pre-compaction snapshots: they are backups, not threads.
+    if (!entry.endsWith(".json") || entry.endsWith(".pre-compact.json")) continue;
+
+    const file = path.join(dir, entry);
+    try {
+      const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+      if (!isSession(parsed) || parsed.scope !== scope) continue;
+      summaries.push({
+        name: parsed.name,
+        turns: parsed.turns.length,
+        updatedAt: parsed.updatedAt,
+        historyTokens: sessionTokens(parsed),
+        file,
+      });
+    } catch {
+      // Unreadable or foreign file: not a thread of ours.
+    }
+  }
+
+  // Most recently used first.
+  return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }

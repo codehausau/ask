@@ -25,13 +25,15 @@
 _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --dry-run --file \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
---max-total-bytes --model --new --no-color --no-session --quiet --reset \
+--list-sessions --max-total-bytes --model --new --no-color --no-session \
+--quiet --reset \
 --session \
---session-max-tokens --show-context --show-session --system --system-file \
+--session-max-tokens --show-context --show-session --switch --system \
+--system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
 
 # Chat-style verbs, accepted as the first word after `ask`.
-_ASK_VERBS="/compact /new /reset /session"
+_ASK_VERBS="/compact /new /reset /session /sessions /switch"
 
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}

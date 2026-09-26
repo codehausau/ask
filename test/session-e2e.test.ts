@@ -381,6 +381,75 @@ test("/compact --dry-run shows the summarisation request without sending it", as
   }
 });
 
+test("/switch makes a thread stick across invocations", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    // Without --session, a piped run is one-shot; --session forces sessions on,
+    // so these runs exercise the pointer rather than the TTY rule.
+    await runCli(["/switch", "review"], base);
+    await runCli(["--session", "review", "@widget.ts first"], base);
+
+    // A later run with no name at all resolves to the switched thread.
+    const output = await runCli(["/session"], base);
+    assert.match(output, /thread review\s+1 turn\(s\)/);
+
+    // Switching again isolates the threads.
+    await runCli(["/switch", "docs"], base);
+    assert.match(await runCli(["/session"], base), /no active thread/);
+    await runCli(["/switch", "review"], base);
+    assert.match(await runCli(["/session"], base), /thread review\s+1 turn\(s\)/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/sessions lists the threads and marks the active one", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    assert.match(await runCli(["/sessions"], base), /no threads yet/);
+
+    await runCli(["--session", "alpha", "@widget.ts first"], base);
+    await runCli(["--session", "beta", "second"], base);
+    await runCli(["/switch", "beta"], base);
+
+    const listing = await runCli(["/sessions"], base);
+    assert.match(listing, /alpha\s+1 turn/);
+    assert.match(listing, /beta\s+1 turn/);
+    // The active thread is starred; alpha is not.
+    assert.match(listing, /\*\s+beta/);
+    assert.doesNotMatch(listing, /\*\s+alpha/);
+    // Listing calls nothing.
+    const before = endpoint.requests.length;
+    await runCli(["/sessions"], base);
+    assert.equal(endpoint.requests.length, before);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("ASK_SESSION names a thread, and /switch is rejected without a name", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "envthread", "@widget.ts first"], base);
+    const output = await runCli(["/session"], { ...base, env: { ASK_SESSION: "envthread" } });
+    assert.match(output, /thread envthread\s+1 turn\(s\)/);
+
+    await assert.rejects(() => runCli(["/switch"], base), /needs a name/);
+    await assert.rejects(() => runCli(["/switch", "bad name"], base), /invalid thread name|needs a name/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("an expired thread starts fresh", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
