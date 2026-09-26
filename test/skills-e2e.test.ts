@@ -52,9 +52,11 @@ async function stubEndpoint(): Promise<{
   };
 }
 
-async function workspace(): Promise<{ cwd: string; state: string; skills: string }> {
+async function workspace(): Promise<{ cwd: string; state: string; skills: string; home: string }> {
   const cwd = await mkdtemp(path.join(tmpdir(), "ask-skill-e2e-"));
   const state = await mkdtemp(path.join(tmpdir(), "ask-skill-state-"));
+  // An empty HOME, so the real ~/.claude/skills cannot leak into the counts.
+  const home = await mkdtemp(path.join(tmpdir(), "ask-skill-home-"));
   const skills = path.join(cwd, "skills");
 
   await writeFile(path.join(cwd, "widget.ts"), "export const widget = 1;\n");
@@ -71,12 +73,19 @@ async function workspace(): Promise<{ cwd: string; state: string; skills: string
   // An asset that must never be sent.
   await mkdir(path.join(skills, "code-review", "assets"), { recursive: true });
   await writeFile(path.join(skills, "code-review", "assets", "big.txt"), "ASSET CONTENT");
-  return { cwd, state, skills };
+  return { cwd, state, skills, home };
 }
 
 async function runCli(
   args: string[],
-  options: { cwd: string; state: string; skills: string; url: string; env?: NodeJS.ProcessEnv },
+  options: {
+    cwd: string;
+    state: string;
+    skills: string;
+    home: string;
+    url: string;
+    env?: NodeJS.ProcessEnv;
+  },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [CLI, ...args], {
     cwd: options.cwd,
@@ -85,6 +94,8 @@ async function runCli(
       ...process.env,
       ASK_STATE_DIR: options.state,
       ASK_SKILLS_DIR: options.skills,
+      HOME: options.home,
+      XDG_CONFIG_HOME: path.join(options.home, ".config"),
       OPENAI_BASE_URL: options.url,
       OPENAI_API_KEY: "test-key",
       ASK_MODEL: "stub",

@@ -55,18 +55,33 @@ test("front matter is parsed, and its absence is tolerated", () => {
 });
 
 test("search paths are ordered, with ASK_SKILLS_DIR first", () => {
-  const paths = skillSearchPaths("/repo", {
+  const paths = skillSearchPaths("/repo/packages/thing", {
     ASK_SKILLS_DIR: `/custom/one${path.delimiter}/custom/two`,
     XDG_CONFIG_HOME: "/cfg",
     HOME: "/home/x",
   });
+
   assert.deepEqual(paths.slice(0, 4), [
     "/custom/one",
     "/custom/two",
-    path.join("/repo", ".ask", "skills"),
-    path.join("/repo", ".agents", "skills"),
+    path.join("/repo/packages/thing", ".ask", "skills"),
+    path.join("/repo/packages/thing", ".agents", "skills"),
   ]);
   assert.ok(paths.includes(path.join("/cfg", "ask", "skills")));
+});
+
+test("ancestors are searched, so a sub-project finds the workspace's skills", () => {
+  const paths = skillSearchPaths("/repo/packages/thing", { HOME: "/home/x" });
+
+  // The real case: skills at the workspace root while working in a sub-project.
+  const workspace = paths.indexOf(path.join("/repo", ".agents", "skills"));
+  const nearest = paths.indexOf(path.join("/repo/packages/thing", ".agents", "skills"));
+  assert.ok(nearest !== -1 && workspace !== -1, "both levels are searched");
+  assert.ok(nearest < workspace, "nearest directory wins");
+
+  // All the way up, and no duplicates.
+  assert.ok(paths.includes(path.join("/", ".agents", "skills")));
+  assert.equal(new Set(paths).size, paths.length, "deduplicated");
 });
 
 test("discovery reads every SKILL.md, sorted by name", async () => {
@@ -245,12 +260,24 @@ test("a skill's own markdown is not mistaken for more skills", async () => {
   );
 });
 
-test("the walk is depth-limited", async () => {
+test("a deeply nested skill set is still found, but the walk is bounded", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ask-skills-deep-"));
-  const tooDeep = path.join(root, "a", "b", "c", "d", "e");
+
+  // The shape a synced skill set actually has: <root>/synced/<bucket>/<skill>/.
+  const synced = path.join(root, "synced", "bucket-abc123", "pdf");
+  await mkdir(synced, { recursive: true });
+  await writeFile(path.join(synced, "SKILL.md"), "---\nname: pdf\n---\nFill forms.\n");
+  // The skill's own reference material must not become skills of its own.
+  await writeFile(path.join(synced, "REFERENCE.md"), "# reference\n");
+
+  const tooDeep = path.join(root, "a", "b", "c", "d", "e", "f");
   await mkdir(tooDeep, { recursive: true });
-  await writeFile(path.join(tooDeep, "SKILL.md"), "---\nname: buried\n---\nDeep.\n");
+  await writeFile(path.join(tooDeep, "SKILL.md"), "---\nname: buried\n---\nToo deep.\n");
 
   const found = await discoverSkills([root]);
-  assert.deepEqual(found, [], `nothing beyond depth ${MAX_SKILL_DEPTH}`);
+  assert.deepEqual(
+    found.map((skill) => skill.name),
+    ["pdf"],
+    `nested skill sets found, nothing beyond depth ${MAX_SKILL_DEPTH}`,
+  );
 });

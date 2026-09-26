@@ -436,8 +436,9 @@ alongside your files. `--skill` is repeatable and composes in the order given.
 
 | Behaviour | Detail |
 | --- | --- |
-| Where skills come from | `$ASK_SKILLS_DIR` (colon-separated), `./.ask/skills`, `./.agents/skills`, `~/.config/ask/skills`, `~/.claude/skills` — first match wins, so a repository-local skill shadows a personal one |
-| Nesting | grouping directories are walked to 3 levels; symlink loops are guarded, and `assets/`, `scripts/`, `templates/`, `node_modules` and dot-directories are skipped |
+| Where skills come from | `$ASK_SKILLS_DIR` (colon-separated), then `.ask/skills` and `.agents/skills` **in the current directory and every ancestor**, then `~/.config/ask/skills` and `~/.claude/skills`. First match wins, so a repository-local skill shadows a personal one |
+| Ancestor search | working in `repo/packages/thing` finds `repo/.agents/skills`, the way git finds its root — no configuration needed for a workspace-level skills directory |
+| Nesting | grouping directories are walked to 5 levels, which reaches a synced layout like `skills/synced/<bucket-id>/<skill>/SKILL.md`; symlink loops are guarded, and `assets/`, `scripts/`, `resources/`, `templates/`, `node_modules` and dot-directories are skipped |
 | The single-file trade-off | inside a directory dedicated to skills, any `.md` counts as one, so a scratch file will show up in `ask /skills` until you remove it |
 | Selection | exact name, else a ranked search over names and descriptions; a tie lists the candidates instead of guessing, and any search match is reported before the request |
 | What is read | **`SKILL.md` only.** Bundled `assets/` and scripts are ignored — a one-shot CLI cannot run them, and a large skill directory would silently eat the context budget. Attach files a skill refers to with `@` |

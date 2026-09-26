@@ -87,30 +87,53 @@ export function parseFrontMatter(text: string): FrontMatter {
 }
 
 /**
- * Where to look for skills, highest priority first. `ASK_SKILLS_DIR` may list
- * several directories separated by the platform path delimiter.
+ * Where to look for skills, highest priority first:
+ *
+ *   $ASK_SKILLS_DIR          explicit, may list several directories
+ *   ./.ask/skills            then the same two in every ancestor directory,
+ *   ./.agents/skills         nearest first — skills usually live at the
+ *                            workspace root while you work in a sub-project
+ *   ~/.config/ask/skills     personal
+ *   ~/.claude/skills         shared with an agent harness
+ *
+ * Ancestors are searched because running from `repo/packages/thing` should still
+ * find `repo/.agents/skills`, the same way git finds its root.
  */
 export function skillSearchPaths(
   cwd: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  const explicit = (env["ASK_SKILLS_DIR"] ?? "")
-    .split(path.delimiter)
-    .filter((entry) => entry.trim().length > 0)
-    .map((entry) => path.resolve(entry));
+  const paths: string[] = [];
+
+  for (const entry of (env["ASK_SKILLS_DIR"] ?? "").split(path.delimiter)) {
+    if (entry.trim().length > 0) paths.push(path.resolve(entry));
+  }
+
+  let dir = path.resolve(cwd);
+  for (;;) {
+    paths.push(path.join(dir, ".ask", "skills"));
+    paths.push(path.join(dir, ".agents", "skills"));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
 
   const xdg = env["XDG_CONFIG_HOME"];
-  return [
-    ...explicit,
-    path.join(cwd, ".ask", "skills"),
-    path.join(cwd, ".agents", "skills"),
+  paths.push(
     xdg ? path.join(path.resolve(xdg), "ask", "skills") : path.join(homedir(), ".config", "ask", "skills"),
-    path.join(homedir(), ".claude", "skills"),
-  ];
+  );
+  paths.push(path.join(homedir(), ".claude", "skills"));
+
+  // An ancestor may coincide with $HOME, so the same path can appear twice.
+  return [...new Set(paths)];
 }
 
-/** How deep to look below a search path before giving up. */
-export const MAX_SKILL_DEPTH = 3;
+/**
+ * How deep to look below a search path. Five, because real layouts nest: a
+ * synced skill set lands at <root>/synced/<bucket-id>/<skill>/SKILL.md. The walk
+ * stops as soon as it finds a SKILL.md, so this only bounds grouping layers.
+ */
+export const MAX_SKILL_DEPTH = 5;
 
 /** Directory names never descended into while looking for skills. */
 const SKIP_SKILL_DIRS: ReadonlySet<string> = new Set([
@@ -123,7 +146,7 @@ const SKIP_SKILL_DIRS: ReadonlySet<string> = new Set([
   "__pycache__",
 ]);
 
-/** A markdown file that is documentation about a skill set, not a skill. */
+/** Markdown that documents a skill set rather than being a skill. */
 const NOT_A_SKILL: ReadonlySet<string> = new Set([
   "readme.md",
   "license.md",
