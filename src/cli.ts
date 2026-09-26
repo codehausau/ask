@@ -18,12 +18,14 @@ import {
   askOnce,
   buildRequest,
   createClient,
+  isLoopbackEndpoint,
   DEFAULT_MODEL,
   DEFAULT_SYSTEM,
   type TokenField,
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
-import { applyToRc, installInstructions } from "./install.ts";
+import { applyEnvFiles, describeEnvFiles } from "./env.ts";
+import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import { OPTIONS, VERBS } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
@@ -115,6 +117,9 @@ Options
 
 class UsageError extends Error {}
 
+/** Configuration problem: reported without dumping the whole usage text. */
+class ConfigError extends Error {}
+
 /**
  * Read the version from package.json. The relative depth differs between the
  * compiled entrypoint (dist/src/cli.js) and running the source directly
@@ -133,15 +138,13 @@ async function readVersion(): Promise<string> {
   return "unknown";
 }
 
-function loadEnvFiles(): void {
-  if (typeof process.loadEnvFile !== "function") return;
-  for (const candidate of [path.join(process.cwd(), ".env"), path.resolve(HERE, "..", "..", ".env")]) {
-    try {
-      process.loadEnvFile(candidate);
-    } catch {
-      // absent or unreadable .env is fine
-    }
-  }
+/** .env candidates: the working directory first, then the install root. */
+function envCandidates(): string[] {
+  return [
+    path.join(process.cwd(), ".env"),
+    path.resolve(HERE, "..", "..", ".env"),
+    path.resolve(HERE, "..", ".env"),
+  ];
 }
 
 function numberOption(raw: string | undefined, name: string): number | undefined {
@@ -314,8 +317,10 @@ async function installCompletion(apply: boolean): Promise<number> {
 
   const rcPath = process.env["ASK_RC"] ?? path.join(homedir(), ".bashrc");
 
+  const fzf = await findExecutable("fzf");
+
   if (!apply) {
-    process.stdout.write(installInstructions(script, rcPath));
+    process.stdout.write(`${installInstructions(script, rcPath)}\n${pickerStatus(fzf)}`);
     return 0;
   }
 
@@ -323,7 +328,7 @@ async function installCompletion(apply: boolean): Promise<number> {
   const update = applyToRc(existing, script);
 
   if (!update.changed) {
-    process.stdout.write(`already configured in ${rcPath}\n`);
+    process.stdout.write(`already configured in ${rcPath}\n${pickerStatus(fzf)}`);
     return 0;
   }
 
@@ -333,7 +338,7 @@ async function installCompletion(apply: boolean): Promise<number> {
       (update.removedStale > 0
         ? `cleared ${update.removedStale} stale line(s) from earlier attempts\n`
         : "") +
-      `run 'exec bash' to load it\n`,
+      `run 'exec bash' to load it\n${pickerStatus(fzf)}`,
   );
   return 0;
 }
@@ -373,7 +378,7 @@ async function main(argv: string[]): Promise<number> {
     return installCompletion(bool("apply"));
   }
 
-  loadEnvFiles();
+  const envReports = await applyEnvFiles(envCandidates());
 
   const stdinText = await readStdin();
   const { refs, question } = extractRefs(positionals.join(" "));
@@ -553,10 +558,17 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const client = createClient({
-    apiKey: flag("api-key") ?? process.env["OPENAI_API_KEY"],
-    baseURL,
-  });
+  const apiKey = flag("api-key") ?? process.env["OPENAI_API_KEY"];
+  if (!apiKey && !isLoopbackEndpoint(baseURL)) {
+    // Say what was read, so a .env that exists but was not picked up is
+    // obvious rather than a dead end.
+    throw new ConfigError(
+      "no API key: set OPENAI_API_KEY, put it in .env, or pass --api-key\n" +
+        describeEnvFiles(envReports, "OPENAI_API_KEY"),
+    );
+  }
+
+  const client = createClient({ apiKey, baseURL });
   const result = await askOnce(client, request);
 
   // Record the turn. Only the question, the refs as typed, and the answer —
@@ -635,7 +647,10 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  if (error instanceof RefResolutionError) {
+  if (error instanceof ConfigError) {
+    process.stderr.write(`ask: ${error.message}\n`);
+    process.exitCode = 2;
+  } else if (error instanceof RefResolutionError) {
     process.stderr.write(`ask: ${error.message}\n`);
     for (const candidate of error.candidates.slice(0, 10)) {
       process.stderr.write(`      ${candidate}\n`);

@@ -3,7 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
-  "keywords": ["llm", "cli", "openai", "one-shot", "code-review"],
+  "keywords": [
+    "llm",
+    "cli",
+    "openai",
+    "one-shot",
+    "code-review"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,7 +23,7 @@
     "ask": "dist/src/cli.js"
   },
   "engines": {
-    "node": ">=20.12.0"
+    "node": ">=20.0.0"
   },
   "packageManager": "pnpm@10.11.0",
   "files": [

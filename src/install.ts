@@ -6,6 +6,9 @@
 // itself, and `--apply` rewrites the block idempotently, clearing stale lines
 // from earlier attempts.
 
+import { access, constants } from "node:fs/promises";
+import path from "node:path";
+
 const BEGIN = "# >>> ask completion >>>";
 const END = "# <<< ask completion <<<";
 
@@ -87,14 +90,47 @@ export function applyToRc(rcText: string, scriptPath: string): RcUpdate {
   return { text, changed: text !== rcText, removedStale, replacedBlock };
 }
 
+/**
+ * Find an executable on PATH without spawning it — the `@` picker silently
+ * degrades to a literal `@` when fzf is missing, which is confusing enough to
+ * be worth reporting during setup.
+ */
+export async function findExecutable(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  canExecute: (file: string) => Promise<boolean> = defaultCanExecute,
+): Promise<string | null> {
+  for (const dir of (env["PATH"] ?? "").split(path.delimiter)) {
+    if (dir.length === 0) continue;
+    const candidate = path.join(dir, name);
+    if (await canExecute(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function defaultCanExecute(file: string): Promise<boolean> {
+  try {
+    await access(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** One line on whether the interactive picker will actually work. */
+export function pickerStatus(fzfPath: string | null): string {
+  return fzfPath === null
+    ? "fzf: not found — '@' stays literal and TAB completion works;\n" +
+        "     install fzf (apt-get install fzf / brew install fzf) for the picker\n"
+    : `fzf: ${fzfPath} — typing '@' on an ask line opens the picker\n`;
+}
+
 /** Human-readable instructions for the print-only path. */
 export function installInstructions(scriptPath: string, rcPath: string): string {
   return (
     `Add this to ${rcPath}, then run 'exec bash':\n\n` +
     `${completionSnippet(scriptPath)}\n\n` +
     `Or let ask do it:  ask --install-completion --apply\n\n` +
-    `zsh: add 'autoload -U +X bashcompinit && bashcompinit' before the source line.\n` +
-    `The '@' picker needs fzf (apt-get install fzf / brew install fzf);\n` +
-    `without it '@' stays literal and TAB completion still works.\n`
+    `zsh: add 'autoload -U +X bashcompinit && bashcompinit' before the source line.\n`
   );
 }

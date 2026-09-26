@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { applyToRc, completionSnippet, installInstructions } from "../src/install.ts";
+import {
+  applyToRc,
+  completionSnippet,
+  findExecutable,
+  installInstructions,
+  pickerStatus,
+} from "../src/install.ts";
 
 const SCRIPT = "/home/node/ask/completions/ask.bash";
 
@@ -86,10 +95,46 @@ test("an empty rc file is handled", () => {
   assert.match(update.text, /^# >>> ask completion >>>/, "no leading blank lines");
 });
 
-test("instructions name the rc file and the fzf requirement", () => {
+test("instructions name the rc file and the zsh bridge", () => {
   const text = installInstructions(SCRIPT, "/home/node/.bashrc");
   assert.match(text, /Add this to \/home\/node\/\.bashrc/);
   assert.match(text, /--install-completion --apply/);
   assert.match(text, /bashcompinit/, "zsh users need the bridge");
-  assert.match(text, /needs fzf/);
+});
+
+test("the picker status says whether @ will actually do anything", () => {
+  // The confusion this exists to prevent: everything loads, ASK_AT_KEY=1, and
+  // `@` still does nothing because fzf is missing.
+  const missing = pickerStatus(null);
+  assert.match(missing, /not found/);
+  assert.match(missing, /'@' stays literal/);
+  assert.match(missing, /apt-get install fzf/);
+
+  const found = pickerStatus("/usr/bin/fzf");
+  assert.match(found, /\/usr\/bin\/fzf/);
+  assert.match(found, /opens the picker/);
+});
+
+test("findExecutable walks PATH and reports the first hit", async () => {
+  const executable = new Set(["/opt/bin/fzf", "/usr/bin/fzf"]);
+  const canExecute = async (file: string): Promise<boolean> => executable.has(file);
+
+  assert.equal(
+    await findExecutable("fzf", { PATH: "/nope:/opt/bin:/usr/bin" }, canExecute),
+    "/opt/bin/fzf",
+    "first match on PATH wins",
+  );
+  assert.equal(await findExecutable("fzf", { PATH: "/nope" }, canExecute), null);
+  assert.equal(await findExecutable("fzf", {}, canExecute), null, "empty PATH");
+  assert.equal(await findExecutable("fzf", { PATH: "::/usr/bin" }, canExecute), "/usr/bin/fzf");
+});
+
+test("findExecutable finds a real executable and rejects a plain file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ask-exec-"));
+  await writeFile(path.join(dir, "runnable"), "#!/bin/sh\n", { mode: 0o755 });
+  await writeFile(path.join(dir, "plain"), "data\n", { mode: 0o644 });
+
+  assert.equal(await findExecutable("runnable", { PATH: dir }), path.join(dir, "runnable"));
+  assert.equal(await findExecutable("plain", { PATH: dir }), null, "not executable");
+  assert.equal(await findExecutable("absent", { PATH: dir }), null);
 });

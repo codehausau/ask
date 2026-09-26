@@ -43,6 +43,11 @@ pnpm build
 cp .env.example .env     # add your key, and a base URL if not using OpenAI
 ```
 
+`.env` is read from the working directory first, then the install root.
+**Anything already exported wins over the file**, so a shell `OPENAI_API_KEY` is
+never silently replaced by a stale `.env`. If a key cannot be found, the error
+lists every file that was checked and what each one defined.
+
 Or straight from a release, no toolchain required:
 
 ```bash
