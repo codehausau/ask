@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   discoverSkills,
+  MAX_SKILL_DEPTH,
   filterSkills,
   loadSkill,
   MAX_SKILL_BYTES,
@@ -85,15 +86,17 @@ test("discovery reads every SKILL.md, sorted by name", async () => {
   assert.ok((found[0]?.bytes ?? 0) > 0);
 });
 
-test("a directory without SKILL.md is not a skill, and absent roots are fine", async () => {
+test("inside a skills tree, any markdown counts as a skill", async () => {
   const root = await skillDir({ real: "---\nname: real\n---\nR\n" });
-  await mkdir(path.join(root, "assets-only"));
-  await writeFile(path.join(root, "assets-only", "notes.md"), "not a skill");
+  await mkdir(path.join(root, "grouping"));
+  await writeFile(path.join(root, "grouping", "notes.md"), "a rubric in a grouping directory");
 
+  // The trade-off of single-file skills: a stray .md in a directory dedicated to
+  // skills is treated as one. It only shows up in listings until you name it.
   const found = await discoverSkills([root, "/does/not/exist"]);
   assert.deepEqual(
     found.map((skill) => skill.name),
-    ["real"],
+    ["notes", "real"],
   );
 });
 
@@ -186,4 +189,68 @@ test("rendering wraps each skill and nothing when there are none", async () => {
     '<skill name="one">\nfirst instructions\n</skill>\n\n<skill name="two">\nsecond instructions\n</skill>',
   );
   assert.equal(renderSkills([]), "", "no skills, no wrapper");
+});
+
+test("a single-file skill needs no directory of its own", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ask-skills-flat-"));
+  await writeFile(
+    path.join(root, "cot-review.md"),
+    "---\nname: cot-review\ndescription: Review CoT code\n---\nCheck timestamps.\n",
+  );
+  // Documentation about the skill set is not itself a skill.
+  await writeFile(path.join(root, "README.md"), "# My skills\n");
+  // A file without front matter takes its name from the filename.
+  await writeFile(path.join(root, "plain-rubric.md"), "Just a rubric.\n");
+
+  const found = await discoverSkills([root]);
+  assert.deepEqual(
+    found.map((skill) => skill.name),
+    ["cot-review", "plain-rubric"],
+    "README.md excluded",
+  );
+  assert.equal(found[0]?.description, "Review CoT code");
+});
+
+test("grouping directories are walked, so skills can be organised", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ask-skills-nested-"));
+  await mkdir(path.join(root, "tak", "cot-author"), { recursive: true });
+  await writeFile(
+    path.join(root, "tak", "cot-author", "SKILL.md"),
+    "---\nname: cot-author\n---\nAuthor CoT.\n",
+  );
+  await mkdir(path.join(root, "general"), { recursive: true });
+  await writeFile(path.join(root, "general", "tidy.md"), "---\nname: tidy\n---\nTidy up.\n");
+
+  const found = await discoverSkills([root]);
+  assert.deepEqual(
+    found.map((skill) => skill.name),
+    ["cot-author", "tidy"],
+    "both a nested SKILL.md and a nested single file are found",
+  );
+});
+
+test("a skill's own markdown is not mistaken for more skills", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ask-skills-assets-"));
+  await mkdir(path.join(root, "review", "assets"), { recursive: true });
+  await writeFile(path.join(root, "review", "SKILL.md"), "---\nname: review\n---\nReview.\n");
+  // Material belonging to the skill, in several shapes.
+  await writeFile(path.join(root, "review", "reference.md"), "# notes\n");
+  await writeFile(path.join(root, "review", "assets", "template.md"), "# template\n");
+
+  const found = await discoverSkills([root]);
+  assert.deepEqual(
+    found.map((skill) => skill.name),
+    ["review"],
+    "a directory holding SKILL.md is one skill, not a group",
+  );
+});
+
+test("the walk is depth-limited", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ask-skills-deep-"));
+  const tooDeep = path.join(root, "a", "b", "c", "d", "e");
+  await mkdir(tooDeep, { recursive: true });
+  await writeFile(path.join(tooDeep, "SKILL.md"), "---\nname: buried\n---\nDeep.\n");
+
+  const found = await discoverSkills([root]);
+  assert.deepEqual(found, [], `nothing beyond depth ${MAX_SKILL_DEPTH}`);
 });

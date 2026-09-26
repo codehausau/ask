@@ -404,9 +404,23 @@ appears anyway.
 
 ## Skills
 
-A skill is a directory containing `SKILL.md` — reusable instructions with
-`name` and `description` front matter, the same layout agent harnesses use, so an
-existing skills directory works unchanged.
+A skill is reusable instructions with `name` and `description` front matter. Two
+layouts work, and they can be mixed in one tree:
+
+```
+skills/
+  bmad-code-review/
+    SKILL.md            conventional form; may sit beside assets/ and scripts
+  cot-review.md         single-file form, which is all a rubric needs
+  tak/
+    cot-author/
+      SKILL.md          grouping directories are walked, up to 3 levels deep
+  README.md             ignored, along with LICENSE/CHANGELOG/CONTRIBUTING/index
+```
+
+The conventional layout is the one agent harnesses use, so an existing skills
+directory works unchanged. A directory containing `SKILL.md` is **one** skill —
+markdown beside it is that skill's own material, not more skills.
 
 ```console
 $ ask /skills                    # list what is available
@@ -423,6 +437,8 @@ alongside your files. `--skill` is repeatable and composes in the order given.
 | Behaviour | Detail |
 | --- | --- |
 | Where skills come from | `$ASK_SKILLS_DIR` (colon-separated), `./.ask/skills`, `./.agents/skills`, `~/.config/ask/skills`, `~/.claude/skills` — first match wins, so a repository-local skill shadows a personal one |
+| Nesting | grouping directories are walked to 3 levels; symlink loops are guarded, and `assets/`, `scripts/`, `templates/`, `node_modules` and dot-directories are skipped |
+| The single-file trade-off | inside a directory dedicated to skills, any `.md` counts as one, so a scratch file will show up in `ask /skills` until you remove it |
 | Selection | exact name, else a ranked search over names and descriptions; a tie lists the candidates instead of guessing, and any search match is reported before the request |
 | What is read | **`SKILL.md` only.** Bundled `assets/` and scripts are ignored — a one-shot CLI cannot run them, and a large skill directory would silently eat the context budget. Attach files a skill refers to with `@` |
 | Front matter | stripped; it is metadata, not instructions |

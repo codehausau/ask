@@ -13,6 +13,7 @@
 // cannot run them, and a large skill directory would silently eat the context
 // budget. Files a skill refers to are attached with `@` like anything else.
 
+import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -108,44 +109,110 @@ export function skillSearchPaths(
   ];
 }
 
+/** How deep to look below a search path before giving up. */
+export const MAX_SKILL_DEPTH = 3;
+
+/** Directory names never descended into while looking for skills. */
+const SKIP_SKILL_DIRS: ReadonlySet<string> = new Set([
+  ".git",
+  "node_modules",
+  "assets",
+  "resources",
+  "scripts",
+  "templates",
+  "__pycache__",
+]);
+
+/** A markdown file that is documentation about a skill set, not a skill. */
+const NOT_A_SKILL: ReadonlySet<string> = new Set([
+  "readme.md",
+  "license.md",
+  "contributing.md",
+  "changelog.md",
+  "index.md",
+]);
+
+async function readSkill(file: string, root: string, fallbackName: string): Promise<SkillSummary | null> {
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) return null;
+
+  let front: FrontMatter;
+  try {
+    front = parseFrontMatter(await readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+  return {
+    name: front.name ?? fallbackName,
+    description: front.description,
+    file,
+    root,
+    bytes: info.size,
+  };
+}
+
 /**
- * Every skill found, deduplicated by name with earlier directories winning, so
- * a repository-local skill shadows a personal one of the same name.
+ * Every skill below the given roots, deduplicated by name with earlier roots
+ * winning, so a repository-local skill shadows a personal one.
+ *
+ * Two layouts are accepted:
+ *   <dir>/SKILL.md   the conventional form; the directory may also hold assets
+ *   <dir>/<name>.md  a single-file skill, which is all a rubric needs
+ *
+ * Grouping directories are walked to MAX_SKILL_DEPTH, so skills/tak/cot/SKILL.md
+ * is found. A directory containing SKILL.md is *not* descended into: everything
+ * beside it is that skill's own material, not more skills.
  */
 export async function discoverSkills(roots: readonly string[]): Promise<SkillSummary[]> {
   const byName = new Map<string, SkillSummary>();
+  const visited = new Set<string>();
 
-  for (const root of roots) {
-    let entries: string[];
+  async function walk(dir: string, root: string, depth: number): Promise<void> {
+    if (depth > MAX_SKILL_DEPTH) return;
+
+    // Guard against symlink loops.
+    const key = path.resolve(dir);
+    if (visited.has(key)) return;
+    visited.add(key);
+
+    let entries: Dirent[];
     try {
-      entries = await readdir(root);
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      continue; // absent search paths are normal
+      return; // absent or unreadable search paths are normal
     }
-    entries.sort((a, b) => a.localeCompare(b));
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    // A SKILL.md here means this directory *is* a skill; do not look deeper.
+    if (entries.some((entry) => entry.isFile() && entry.name === "SKILL.md")) {
+      const skill = await readSkill(path.join(dir, "SKILL.md"), root, path.basename(dir));
+      if (skill && !byName.has(skill.name)) byName.set(skill.name, skill);
+      return;
+    }
 
     for (const entry of entries) {
-      const file = path.join(root, entry, "SKILL.md");
-      const info = await stat(file).catch(() => null);
-      if (!info?.isFile()) continue;
-
-      let front: FrontMatter;
-      try {
-        front = parseFrontMatter(await readFile(file, "utf8"));
-      } catch {
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || SKIP_SKILL_DIRS.has(entry.name)) continue;
+        await walk(path.join(dir, entry.name), root, depth + 1);
         continue;
       }
-      const name = front.name ?? entry;
-      if (byName.has(name)) continue; // first directory wins
+      if (!entry.isFile()) continue;
 
-      byName.set(name, {
-        name,
-        description: front.description,
-        file,
+      // Single-file skill: any markdown that is not obviously documentation.
+      const lower = entry.name.toLowerCase();
+      if (!lower.endsWith(".md") || NOT_A_SKILL.has(lower)) continue;
+
+      const skill = await readSkill(
+        path.join(dir, entry.name),
         root,
-        bytes: info.size,
-      });
+        entry.name.slice(0, -3),
+      );
+      if (skill && !byName.has(skill.name)) byName.set(skill.name, skill);
     }
+  }
+
+  for (const root of roots) {
+    await walk(root, root, 1);
   }
 
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
