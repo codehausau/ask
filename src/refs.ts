@@ -11,14 +11,11 @@
 // `src/chat.ts` is predictable, whereas subsequence matching turns `@cot` into
 // a lottery. For interactive fuzzy picking use `askf` (fzf) instead.
 
-import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
+import { gitListFiles } from "./git.ts";
 import { isSecretPath, LOCKFILES, SKIP_DIRS, SKIP_EXTENSIONS } from "./skip.ts";
-
-const execFileAsync = promisify(execFile);
 
 /** Hard stop on tree traversal, so a stray `@x` in `/` cannot hang the CLI. */
 export const MAX_SEARCH_ENTRIES = 50_000;
@@ -138,22 +135,16 @@ function isSearchable(relative: string, includeSecrets: boolean): boolean {
  * local, and never consulted for file *contents*. Returns null when the
  * directory is not a git work tree, or git is unavailable.
  */
-async function gitListing(root: string, includeSecrets: boolean, maxEntries: number): Promise<TreeListing | null> {
-  let stdout: string;
-  try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-      { maxBuffer: 64 * 1024 * 1024, timeout: 5_000, windowsHide: true },
-    );
-    stdout = result.stdout;
-  } catch {
-    return null;
-  }
+async function gitListing(
+  root: string,
+  includeSecrets: boolean,
+  maxEntries: number,
+): Promise<TreeListing | null> {
+  const files = await gitListFiles(root);
+  if (!files) return null;
 
-  const relatives = stdout
-    .split("\0")
-    .filter((entry) => entry.length > 0 && isSearchable(entry, includeSecrets))
+  const relatives = files
+    .filter((entry) => isSearchable(entry, includeSecrets))
     .sort((a, b) => a.localeCompare(b));
 
   const truncated = relatives.length > maxEntries;

@@ -24,8 +24,12 @@
 # Kept in sync with src/options.ts by test/completion.test.ts.
 _ASK_FLAGS="--all-matches --api-key --base-url --dry-run --file --help \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
---max-total-bytes --model --quiet --show-context --system --system-file \
+--max-total-bytes --model --new --no-session --quiet --reset --session \
+--session-max-tokens --show-context --show-session --system --system-file \
 --temperature --token-field --version -V -f -h -m -q -s"
+
+# Chat-style verbs, accepted as the first word after `ask`.
+_ASK_VERBS="/new /reset /session"
 
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
@@ -160,6 +164,15 @@ _ask_complete() {
       ;;
     -*)
       mapfile -t COMPREPLY < <(compgen -W "$_ASK_FLAGS" -- "$cur")
+      ;;
+    /*)
+      # Verbs are only meaningful as the first word; elsewhere a /path is
+      # more likely what was meant.
+      if [ "$COMP_CWORD" -eq 1 ]; then
+        mapfile -t COMPREPLY < <(compgen -W "$_ASK_VERBS" -- "$cur")
+      else
+        _ask_paths "$cur" ""
+      fi
       ;;
   esac
   return 0

@@ -68,9 +68,18 @@ test("a partial path is not searched, only prefix-completed", async () => {
 
 test("flags complete on a leading dash", async () => {
   const cwd = await fixture();
-  assert.deepEqual(await complete(cwd, 1, "ask", "--sh"), ["--show-context"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "--sh"), ["--show-context", "--show-session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "--show-c"), ["--show-context"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "--max-t"), ["--max-tokens", "--max-total-bytes"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "--dr"), ["--dry-run"]);
+});
+
+test("/verbs complete as the first word only", async () => {
+  const cwd = await fixture();
+  assert.deepEqual(await complete(cwd, 1, "ask", "/"), ["/new", "/reset", "/session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session"]);
+  // Later on the line, a slash is more likely an absolute path than a verb.
+  assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", "/nonexistent-xyz"), []);
 });
 
 test("--token-field offers only the two valid values", async () => {

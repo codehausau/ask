@@ -22,8 +22,25 @@ import {
   type TokenField,
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
-import { OPTIONS } from "./options.ts";
-import { RefResolutionError } from "./refs.ts";
+import { OPTIONS, VERBS } from "./options.ts";
+import { RefResolutionError, resolveRef } from "./refs.ts";
+import {
+  appendTurn,
+  DEFAULT_SESSION_MAX_TOKENS,
+  DEFAULT_SESSION_NAME,
+  DEFAULT_SESSION_TTL_MS,
+  estimateTokens,
+  loadSession,
+  pruneSession,
+  resetSession,
+  saveSession,
+  sessionLabel,
+  sessionMessages,
+  sessionPath,
+  sessionRefs,
+  sessionScope,
+  type Session,
+} from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,7 +48,17 @@ const USAGE = `ask — one-shot LLM question with file/directory context
 
 Usage
   ask [options] '<prompt with @file, @dir, @glob or @search references>'
+  ask /new | /reset | /session
   <command> | ask [options] '<prompt>'
+
+Sessions
+  Interactive runs continue the previous conversation for this repository,
+  so a follow-up needs no @references. Piped runs are always one-shot.
+
+  ask /new '<prompt>'    start a fresh thread, then ask
+  ask /new               start a fresh thread and stop
+  ask /session           show the current thread, no API call
+  --no-session           one-shot, ignoring and not touching the thread
 
 References
   @src/context.ts   an exact path (file or directory)
@@ -61,6 +88,12 @@ Options
       --max-files <n>       max files from directory walks (default 200)
       --all-matches         attach every search match instead of the best one
       --include-secrets     do not skip .env / *.pem / key-ish files
+      --new, --reset        alias of /new
+      --show-session        alias of /session
+      --no-session          do not read or write the thread
+      --session <name>      use a named thread (also forces sessions on)
+      --session-max-tokens <n>
+                            prune oldest turns past this budget (default ${DEFAULT_SESSION_MAX_TOKENS})
       --show-context        print what would be attached, then exit
       --dry-run             print the request JSON, then exit
       --json                print the result as JSON
@@ -105,6 +138,15 @@ function numberOption(raw: string | undefined, name: string): number | undefined
   const value = Number(raw);
   if (!Number.isFinite(value)) throw new UsageError(`--${name} must be a number, got "${raw}"`);
   return value;
+}
+
+/** Idle timeout for implicit sessions; `ASK_SESSION_TTL` is in minutes. */
+function sessionTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env["ASK_SESSION_TTL"];
+  if (raw === undefined) return DEFAULT_SESSION_TTL_MS;
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) return DEFAULT_SESSION_TTL_MS;
+  return minutes * 60 * 1000;
 }
 
 function tokenFieldOption(raw: string | undefined): TokenField | undefined {
@@ -163,6 +205,36 @@ function printContext(context: ContextResult): void {
   );
 }
 
+/** Print a session without calling the API. */
+function printSession(session: Session | null, file: string): void {
+  if (!session || session.turns.length === 0) {
+    process.stdout.write(`no active thread\n(would be stored at ${file})\n`);
+    return;
+  }
+
+  process.stdout.write(
+    `thread ${sessionLabel(session)}  ${session.turns.length} turn(s)\n` +
+      `scope   ${session.scope}\n` +
+      `updated ${session.updatedAt}\n` +
+      `file    ${file}\n\n`,
+  );
+
+  let total = 0;
+  session.turns.forEach((turn, index) => {
+    const refs = turn.refs.length > 0 ? `  [${turn.refs.map((ref) => `@${ref}`).join(" ")}]` : "";
+    const answer = turn.answer.replace(/\s+/g, " ");
+    total += estimateTokens(turn.question) + estimateTokens(turn.answer);
+    process.stdout.write(
+      `${index + 1}. you: ${turn.question}${refs}\n` +
+        `   llm: ${answer.length > 160 ? `${answer.slice(0, 160)}…` : answer}\n`,
+    );
+  });
+
+  process.stdout.write(
+    `\n~${total} tokens of history; file contents are re-read fresh each turn\n`,
+  );
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Record<string, unknown>;
   let positionals: string[];
@@ -172,6 +244,13 @@ async function main(argv: string[]): Promise<number> {
     positionals = parsed.positionals;
   } catch (error) {
     throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
+
+  // A leading /verb maps onto the flag of the same name.
+  const firstPositional = positionals[0];
+  if (firstPositional !== undefined && firstPositional in VERBS) {
+    values[VERBS[firstPositional]!] = true;
+    positionals = positionals.slice(1);
   }
 
   const flag = (name: string): string | undefined => values[name] as string | undefined;
@@ -191,11 +270,55 @@ async function main(argv: string[]): Promise<number> {
 
   const stdinText = await readStdin();
   const { refs, question } = extractRefs(positionals.join(" "));
-  const allRefs = [...refs, ...((values["file"] as string[] | undefined) ?? [])];
+  const turnRefs = [...refs, ...((values["file"] as string[] | undefined) ?? [])];
 
-  if (allRefs.length === 0 && !question && !stdinText) {
+  // Sessions are implicit for interactive runs only: a piped or scripted run
+  // must stay reproducible. `--session <name>` forces them on regardless.
+  const sessionName = flag("session") ?? DEFAULT_SESSION_NAME;
+  const sessionsDisabled = bool("no-session") || process.env["ASK_SESSION"] === "0";
+  const sessionsOn =
+    !sessionsDisabled && (process.stdout.isTTY === true || flag("session") !== undefined);
+
+  const scope = sessionsOn || bool("new") || bool("show-session") ? await sessionScope(process.cwd()) : process.cwd();
+  const sessionKey = { scope, name: sessionName };
+
+  if (bool("new")) {
+    const removed = await resetSession(sessionKey);
+    if (!bool("quiet")) {
+      process.stderr.write(
+        removed ? "-- started a new thread\n" : "-- no thread to clear; starting fresh\n",
+      );
+    }
+  }
+
+  if (bool("show-session")) {
+    const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
+    printSession(existing, sessionPath(sessionKey));
+    return 0;
+  }
+
+  if (turnRefs.length === 0 && !question && !stdinText) {
+    // `ask /new` on its own is a complete command, not a usage error.
+    if (bool("new")) return 0;
     throw new UsageError("nothing to ask: give a prompt, an @path, or pipe stdin");
   }
+
+  const session = sessionsOn && !bool("new") ? await loadSession(sessionKey, sessionTtlMs()) : null;
+
+  // Files from earlier turns stay attached, re-read from disk so a follow-up
+  // after an edit sees current code. Refs that no longer resolve are dropped
+  // rather than failing the follow-up.
+  const carried: string[] = [];
+  for (const ref of sessionRefs(session)) {
+    if (turnRefs.includes(ref)) continue;
+    try {
+      await resolveRef(ref, { cwd: process.cwd() });
+      carried.push(ref);
+    } catch {
+      if (!bool("quiet")) process.stderr.write(`-- dropped @${ref} from the thread (no longer resolves)\n`);
+    }
+  }
+  const allRefs = [...carried, ...turnRefs];
 
   const context = await collectContext(allRefs, {
     includeSecrets: bool("include-secrets"),
@@ -224,11 +347,30 @@ async function main(argv: string[]): Promise<number> {
     ? await readFile(systemFile, "utf8")
     : (flag("system") ?? process.env["ASK_SYSTEM"] ?? DEFAULT_SYSTEM);
 
+  const prompt = renderPrompt(question, context, stdinText);
+
+  // Prune loudly: the whole thread is resent every turn, so silent growth is
+  // the one thing an implicit session must not do.
+  let history = session;
+  if (session) {
+    const budget =
+      numberOption(flag("session-max-tokens"), "session-max-tokens") ??
+      DEFAULT_SESSION_MAX_TOKENS;
+    const pruned = pruneSession(session, budget, estimateTokens(prompt));
+    history = pruned.session;
+    if (pruned.dropped > 0 && !bool("quiet")) {
+      process.stderr.write(
+        `-- pruned ${pruned.dropped} old turn(s) to stay under ${budget} tokens\n`,
+      );
+    }
+  }
+
   const baseURL = flag("base-url") ?? process.env["OPENAI_BASE_URL"];
   const request = buildRequest({
-    prompt: renderPrompt(question, context, stdinText),
+    prompt,
     model: flag("model") ?? process.env["ASK_MODEL"] ?? DEFAULT_MODEL,
     system,
+    history: sessionMessages(history),
     maxTokens: numberOption(flag("max-tokens"), "max-tokens"),
     temperature: numberOption(flag("temperature"), "temperature"),
     tokenField: tokenFieldOption(flag("token-field")),
@@ -245,6 +387,20 @@ async function main(argv: string[]): Promise<number> {
     baseURL,
   });
   const result = await askOnce(client, request);
+
+  // Record the turn. Only the question, the refs as typed, and the answer —
+  // never file contents, which are re-read next turn.
+  let saved: Session | null = null;
+  if (sessionsOn) {
+    saved = appendTurn(history, {
+      scope,
+      name: sessionName,
+      question: question || (stdinText ? "(piped input)" : ""),
+      refs: turnRefs,
+      answer: result.text,
+    });
+    await saveSession(saved);
+  }
 
   if (bool("json")) {
     process.stdout.write(
@@ -264,6 +420,9 @@ async function main(argv: string[]): Promise<number> {
               paths: resolution.paths.map((absolute) => path.relative(process.cwd(), absolute)),
             })),
           },
+          session: saved
+            ? { name: sessionLabel(saved), turns: saved.turns.length, scope: saved.scope }
+            : null,
         },
         null,
         2,
@@ -275,8 +434,10 @@ async function main(argv: string[]): Promise<number> {
   process.stdout.write(`${result.text}\n`);
 
   if (!bool("quiet")) {
+    // Implicit state must be visible: say which thread and which turn.
+    const thread = saved ? `thread ${sessionLabel(saved)} turn ${saved.turns.length} | ` : "";
     process.stderr.write(
-      `\n-- ${result.model} | ${context.blocks.length} file(s) ` +
+      `\n-- ${result.model} | ${thread}${context.blocks.length} file(s) ` +
         `${formatBytes(context.totalBytes)} | tokens in ${result.usage.input ?? "?"} ` +
         `out ${result.usage.output ?? "?"}\n`,
     );

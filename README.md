@@ -263,6 +263,51 @@ matched nothing / matched ambiguously.
 `max_tokens`); every other base URL gets `max_tokens`. Override with
 `--token-field` if your gateway disagrees.
 
+## Sessions
+
+Interactive runs continue the previous conversation for the current repository,
+so a follow-up needs no `@references`:
+
+```console
+$ ask '@src/chat.ts what does this do?'
+...
+-- gpt-4o-mini | thread ask turn 1 | 1 file(s) 4.6 KB | tokens in 1174 out 210
+
+$ ask 'now explain the token field logic'
+...
+-- gpt-4o-mini | thread ask turn 2 | 1 file(s) 4.6 KB | tokens in 1502 out 260
+```
+
+```bash
+ask /new '<prompt>'   # start a fresh thread, then ask
+ask /new              # start a fresh thread and stop
+ask /session          # show the thread, no API call
+```
+
+`--new` / `--reset`, `--show-session` and `--no-session` are flag aliases for
+scripting. It is still **one request per invocation** — a session only decides
+what goes into that request. No tools, no loop.
+
+### The rules, and why
+
+| Rule | Reason |
+| --- | --- |
+| **Implicit only when stdout is a terminal.** Piped and scripted runs are always one-shot | `git diff \| ask 'review'` in a loop must stay reproducible. `--session <name>` forces sessions on anyway |
+| **Turns store your question, the refs as typed, and the answer — never file contents.** Files are re-read from disk each turn | A follow-up after an edit sees current code, and a file is sent once per request rather than once per turn |
+| **Scoped to the git repo root** (falling back to cwd) | You ask about a codebase, not a terminal. Each project gets its own thread |
+| **Idle threads expire after 2 h** (`ASK_SESSION_TTL`, minutes) | Yesterday's conversation should not colour today's unrelated question |
+| **Oldest turns are pruned past 32k tokens** (`--session-max-tokens`), and pruning is announced on stderr | The whole thread is resent every turn, so silent growth is the one thing implicit state must not do |
+| **Stored `0600` under `$XDG_STATE_HOME/ask/`** (or `ASK_STATE_DIR`), outside any repo, and `.ask/` is in the skip rules | A session quotes your source. It must also never be attachable, or the model reads its own transcript back as "code" |
+| **`--dry-run` includes the assembled history**; the footer always names the thread and turn | Implicit state has to be visible, and "you can always see exactly what is sent" is the audit story |
+
+Refs from earlier turns that no longer resolve (renamed, deleted) are dropped
+with a note rather than failing the follow-up.
+
+> **Cost.** Every turn resends the history plus current file contents. A 6k-token
+> file over five turns is ~37k input tokens, not 6k. Use `ask /session` to see
+> the thread, `/new` liberally, and `--no-session` for one-offs. On a local model
+> with a small context window, prefer `/new` per question.
+
 ## Local models (Ollama, llama.cpp, LM Studio, vLLM)
 
 Any OpenAI-compatible endpoint works. For Ollama:

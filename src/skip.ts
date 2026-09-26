@@ -38,6 +38,8 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   ".svelte-kit",
   ".astro",
   ".dart_tool",
+  // ask's own scratch space, so a session file can never be attached.
+  ".ask",
 ]);
 
 /** Extensions treated as non-text and skipped during directory walks. */

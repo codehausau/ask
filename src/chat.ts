@@ -46,10 +46,17 @@ export interface ClientOptions {
   readonly maxRetries?: number;
 }
 
+export interface HistoryMessage {
+  readonly role: "user" | "assistant";
+  readonly content: string;
+}
+
 export interface BuildRequestOptions {
   readonly prompt: string;
   readonly model?: string;
   readonly system?: string;
+  /** Prior turns, oldest first. Still one request: this is not a loop. */
+  readonly history?: readonly HistoryMessage[];
   readonly maxTokens?: number | undefined;
   readonly temperature?: number | undefined;
   readonly baseURL?: string | undefined;
@@ -128,6 +135,7 @@ export function buildRequest({
   prompt,
   model = DEFAULT_MODEL,
   system = DEFAULT_SYSTEM,
+  history = [],
   maxTokens,
   temperature,
   baseURL,
@@ -135,15 +143,18 @@ export function buildRequest({
 }: BuildRequestOptions): OneShotRequest {
   if (!prompt.trim()) throw new Error("empty prompt");
 
-  const request: OneShotRequest = {
-    model,
-    messages: system
-      ? [
-          { role: "system", content: system },
-          { role: "user", content: prompt },
-        ]
-      : [{ role: "user", content: prompt }],
-  };
+  const messages: OneShotRequest["messages"] = [];
+  if (system) messages.push({ role: "system", content: system });
+  for (const message of history) {
+    messages.push(
+      message.role === "assistant"
+        ? { role: "assistant", content: message.content }
+        : { role: "user", content: message.content },
+    );
+  }
+  messages.push({ role: "user", content: prompt });
+
+  const request: OneShotRequest = { model, messages };
 
   if (typeof maxTokens === "number" && Number.isFinite(maxTokens)) {
     if (tokenLimitField(baseURL, tokenField) === "max_tokens") {

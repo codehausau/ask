@@ -19,7 +19,7 @@ will *not* do.
 | Exactly one HTTP request per invocation | No loop in the codebase; asserted in `test/chat.test.ts` |
 | Only one SDK method is reachable | `createClient` returns a one-method `ChatClient`, not the SDK client |
 | The model cannot choose what it reads | Context comes only from `@paths` and `-f` flags you pass |
-| Nothing is written to your filesystem | Output goes to stdout / stderr only |
+| Nothing is written to your filesystem except the session file | Answers go to stdout; the only write is the session thread described below |
 | Only one subprocess, read-only | `git ls-files` enumerates candidate paths for `@search`; it never reads file contents and is skipped outside a git work tree |
 | Credentials are not attached by accident | `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `credentials.json` and similar are skipped even when named explicitly, unless `--include-secrets` |
 | You can see the payload before sending | `--dry-run` prints the exact JSON body; `--show-context` lists attachments and never calls the API |
@@ -36,6 +36,26 @@ will *not* do.
   byte sniffing), not guarantees. Use `--show-context` when in doubt.
 - **Secret detection.** The credential filter is filename-based. It will not
   catch a key pasted into `src/config.ts`.
+
+## Session data at rest
+
+Interactive runs keep a conversation thread so follow-ups need no `@references`.
+This is the tool's only persistent state, and its only write.
+
+- **Location**: `$XDG_STATE_HOME/ask/sessions/<hash>.json` (or `ASK_STATE_DIR`),
+  deliberately outside any repository. Mode `0600`, directory `0700`.
+- **Contents**: your questions, the `@refs` as typed, and the model's answers.
+  **Not** file contents — those are re-read from disk for each request, so the
+  thread never becomes a second copy of your source.
+- **Never attachable**: `.ask/` is in the skip rules and the state directory
+  lives outside the tree, so a session cannot be fed back in as context.
+- **Expiry and pruning**: idle threads are discarded after 2 hours
+  (`ASK_SESSION_TTL`); oldest turns are dropped past 32k tokens.
+- **Clearing**: `ask /new`, or delete the file. `--no-session` / `ASK_SESSION=0`
+  disables the feature entirely; piped and scripted runs never use it.
+
+Sessions do not change the one-request property: each invocation still issues
+exactly one chat completion, with no tools.
 
 ## Key handling
 

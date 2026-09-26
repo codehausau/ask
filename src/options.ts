@@ -17,6 +17,12 @@ export const OPTIONS = {
   "max-files": { type: "string" },
   "all-matches": { type: "boolean" },
   "include-secrets": { type: "boolean" },
+  new: { type: "boolean" },
+  reset: { type: "boolean" },
+  session: { type: "string" },
+  "show-session": { type: "boolean" },
+  "no-session": { type: "boolean" },
+  "session-max-tokens": { type: "string" },
   "show-context": { type: "boolean" },
   "dry-run": { type: "boolean" },
   json: { type: "boolean" },
@@ -24,6 +30,17 @@ export const OPTIONS = {
   version: { type: "boolean", short: "V" },
   help: { type: "boolean", short: "h" },
 } as const;
+
+/**
+ * Chat-style verbs accepted as the first positional. Each maps to the flag of
+ * the same name; the verb form is what the docs lead with, the flag form exists
+ * for scripts and completion.
+ */
+export const VERBS: Readonly<Record<string, string>> = {
+  "/new": "new",
+  "/reset": "new",
+  "/session": "show-session",
+};
 
 /** Every accepted flag spelling, e.g. `--model` and `-m`. */
 export function flagSpellings(): string[] {
