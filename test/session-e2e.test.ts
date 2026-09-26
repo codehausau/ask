@@ -256,6 +256,89 @@ test("--no-session and ASK_SESSION=0 opt out entirely", async () => {
   }
 });
 
+test("/compact makes exactly one request and replaces the history with it", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "c1", "@widget.ts what is this?"], base);
+    await runCli(["--session", "c1", "anything risky?"], base);
+    assert.equal(endpoint.requests.length, 2);
+
+    const output = await runCli(["/compact", "--session", "c1"], base);
+
+    // One request for the compaction itself, no more.
+    assert.equal(endpoint.requests.length, 3, "compaction is a single request");
+    const compaction = endpoint.requests[2]!;
+    assert.match(compaction.messages[0]!.content, /compact a developer's question/i);
+    assert.match(compaction.messages[1]!.content, /what is this\?/);
+    assert.match(compaction.messages[1]!.content, /files: widget\.ts/);
+    assert.match(output, /answer 3/, "the summary is printed for inspection");
+
+    // The next question carries the summary, not the original turns.
+    await runCli(["--session", "c1", "carry on"], base);
+    const next = endpoint.requests[3]!;
+    const contents = next.messages.map((message) => message.content);
+    assert.equal(
+      contents.some((content) => content.includes("<conversation-summary>")),
+      true,
+    );
+    assert.equal(
+      contents.some((content) => content.includes("anything risky?")),
+      false,
+      "original turns are gone",
+    );
+    // Files stay attached across compaction.
+    assert.match(contents.at(-1) ?? "", /<file path="widget\.ts">/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/compact with nothing to do issues no request", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    const empty = await runCli(["/compact", "--session", "c2"], base);
+    assert.match(empty, /no thread to compact/);
+    assert.equal(endpoint.requests.length, 0);
+
+    // A thread that is already a single summary is left alone.
+    await runCli(["--session", "c3", "@widget.ts first"], base);
+    await runCli(["/compact", "--session", "c3"], base);
+    const before = endpoint.requests.length;
+    const again = await runCli(["/compact", "--session", "c3"], base);
+    assert.match(again, /already a single summary/);
+    assert.equal(endpoint.requests.length, before, "no second compaction");
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/compact --dry-run shows the summarisation request without sending it", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "c4", "@widget.ts first"], base);
+    const before = endpoint.requests.length;
+
+    const output = await runCli(["/compact", "--session", "c4", "--dry-run"], base);
+    assert.equal(endpoint.requests.length, before, "nothing sent");
+
+    const request = JSON.parse(output) as Received;
+    assert.equal(request.messages[0]!.role, "system");
+    assert.match(request.messages[0]!.content, /Invent nothing/);
+    assert.equal("tools" in request, false);
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("an expired thread starts fresh", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();

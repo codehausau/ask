@@ -284,6 +284,7 @@ $ ask 'now explain the token field logic'
 ask /new '<prompt>'   # start a fresh thread, then ask
 ask /new              # start a fresh thread and stop
 ask /session          # show the thread, no API call
+ask /compact          # summarise the thread into notes, files stay attached
 ```
 
 `--new` / `--reset`, `--show-session` and `--no-session` are flag aliases for
@@ -304,6 +305,33 @@ what goes into that request. No tools, no loop.
 
 Refs from earlier turns that no longer resolve (renamed, deleted) are dropped
 with a note rather than failing the follow-up.
+
+### Compacting
+
+A long thread can be summarised into continuation notes:
+
+```console
+$ ask /compact
+- src/skip.ts holds the shared skip rules
+- decided: search and attachment must use the same filters
+- open: whether .tmp should be configurable
+
+-- compacted 9 turn(s): ~8400 → ~180 tokens of history
+-- 2 file(s) stay attached; previous thread kept at .../sessions/<id>.pre-compact.json
+```
+
+- **Still one request per invocation.** `/compact` *is* the request; nothing is
+  ever summarised behind your back during a normal question. That is why it is
+  an explicit verb rather than something pruning does automatically.
+- **Files stay attached** — every ref from the compacted turns carries over, and
+  is re-read from disk as usual.
+- **Lossy, so recoverable.** The pre-compaction thread is kept alongside as
+  `<id>.pre-compact.json`; `ask /new` removes both.
+- **The summary is printed** so you can see what was kept, and the footer reports
+  the before/after token count. If the summary is no smaller than the thread —
+  which happens on short threads — it says so.
+- `--compact` is the flag alias; `--dry-run` shows the summarisation request
+  without sending it.
 
 > **Cost.** Every turn resends the history plus current file contents. A 6k-token
 > file over five turns is ~37k input tokens, not 6k. Use `ask /session` to see

@@ -51,7 +51,10 @@ This is the tool's only persistent state, and its only write.
   lives outside the tree, so a session cannot be fed back in as context.
 - **Expiry and pruning**: idle threads are discarded after 2 hours
   (`ASK_SESSION_TTL`); oldest turns are dropped past 32k tokens.
-- **Clearing**: `ask /new`, or delete the file. `--no-session` / `ASK_SESSION=0`
+- **Compaction**: `ask /compact` sends the thread to the model once and replaces
+  it with the summary. The prior thread is kept alongside as
+  `<hash>.pre-compact.json`, same permissions, removed by `ask /new`.
+- **Clearing**: `ask /new`, or delete the files. `--no-session` / `ASK_SESSION=0`
   disables the feature entirely; piped and scripted runs never use it.
 
 Sessions do not change the one-request property: each invocation still issues

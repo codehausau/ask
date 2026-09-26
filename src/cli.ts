@@ -26,6 +26,10 @@ import { OPTIONS, VERBS } from "./options.ts";
 import { RefResolutionError, resolveRef } from "./refs.ts";
 import {
   appendTurn,
+  applyCompaction,
+  backupSession,
+  buildCompactionPrompt,
+  COMPACT_SYSTEM,
   DEFAULT_SESSION_MAX_TOKENS,
   DEFAULT_SESSION_NAME,
   DEFAULT_SESSION_TTL_MS,
@@ -39,6 +43,7 @@ import {
   sessionPath,
   sessionRefs,
   sessionScope,
+  sessionTokens,
   type Session,
 } from "./session.ts";
 
@@ -58,6 +63,7 @@ Sessions
   ask /new '<prompt>'    start a fresh thread, then ask
   ask /new               start a fresh thread and stop
   ask /session           show the current thread, no API call
+  ask /compact           summarise the thread into notes, keeping files attached
   --no-session           one-shot, ignoring and not touching the thread
 
 References
@@ -90,6 +96,7 @@ Options
       --include-secrets     do not skip .env / *.pem / key-ish files
       --new, --reset        alias of /new
       --show-session        alias of /session
+      --compact             alias of /compact
       --no-session          do not read or write the thread
       --session <name>      use a named thread (also forces sessions on)
       --session-max-tokens <n>
@@ -224,6 +231,15 @@ function printSession(session: Session | null, file: string): void {
     const refs = turn.refs.length > 0 ? `  [${turn.refs.map((ref) => `@${ref}`).join(" ")}]` : "";
     const answer = turn.answer.replace(/\s+/g, " ");
     total += estimateTokens(turn.question) + estimateTokens(turn.answer);
+
+    if (turn.summary) {
+      // Shown as a summary, not as a question and answer that never happened.
+      process.stdout.write(
+        `${index + 1}. summary of ${turn.covers ?? "?"} earlier turn(s)${refs}\n` +
+          `   ${answer.length > 300 ? `${answer.slice(0, 300)}…` : answer}\n`,
+      );
+      return;
+    }
     process.stdout.write(
       `${index + 1}. you: ${turn.question}${refs}\n` +
         `   llm: ${answer.length > 160 ? `${answer.slice(0, 160)}…` : answer}\n`,
@@ -279,7 +295,9 @@ async function main(argv: string[]): Promise<number> {
   const sessionsOn =
     !sessionsDisabled && (process.stdout.isTTY === true || flag("session") !== undefined);
 
-  const scope = sessionsOn || bool("new") || bool("show-session") ? await sessionScope(process.cwd()) : process.cwd();
+  const needsScope =
+    sessionsOn || bool("new") || bool("show-session") || bool("compact");
+  const scope = needsScope ? await sessionScope(process.cwd()) : process.cwd();
   const sessionKey = { scope, name: sessionName };
 
   if (bool("new")) {
@@ -294,6 +312,68 @@ async function main(argv: string[]): Promise<number> {
   if (bool("show-session")) {
     const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
     printSession(existing, sessionPath(sessionKey));
+    return 0;
+  }
+
+  // /compact: one invocation, one request, whose answer becomes the new
+  // history. Deliberately explicit — nothing is ever summarised behind your
+  // back during a normal question.
+  if (bool("compact")) {
+    const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
+    if (!existing || existing.turns.length === 0) {
+      process.stdout.write("no thread to compact\n");
+      return 0;
+    }
+    if (existing.turns.length === 1 && existing.turns[0]?.summary === true) {
+      process.stdout.write("thread is already a single summary; nothing to compact\n");
+      return 0;
+    }
+
+    const compactBaseURL = flag("base-url") ?? process.env["OPENAI_BASE_URL"];
+    const compactRequest = buildRequest({
+      prompt: buildCompactionPrompt(existing),
+      model: flag("model") ?? process.env["ASK_MODEL"] ?? DEFAULT_MODEL,
+      system: COMPACT_SYSTEM,
+      maxTokens: numberOption(flag("max-tokens"), "max-tokens") ?? 800,
+      temperature: numberOption(flag("temperature"), "temperature"),
+      tokenField: tokenFieldOption(flag("token-field")),
+      baseURL: compactBaseURL,
+    });
+
+    if (bool("dry-run")) {
+      process.stdout.write(`${JSON.stringify(compactRequest, null, 2)}\n`);
+      return 0;
+    }
+
+    const before = sessionTokens(existing);
+    const compactClient = createClient({
+      apiKey: flag("api-key") ?? process.env["OPENAI_API_KEY"],
+      baseURL: compactBaseURL,
+    });
+    const summary = await askOnce(compactClient, compactRequest);
+
+    // Compaction is lossy, so keep the previous thread recoverable.
+    const backup = await backupSession(existing);
+    const compacted = applyCompaction(existing, summary.text);
+    await saveSession(compacted);
+
+    const after = sessionTokens(compacted);
+    process.stdout.write(`${summary.text}\n`);
+    if (!bool("quiet")) {
+      process.stderr.write(
+        `\n-- compacted ${existing.turns.length} turn(s): ` +
+          `~${before} → ~${after} tokens of history\n` +
+          `-- ${compacted.turns[0]?.refs.length ?? 0} file(s) stay attached; ` +
+          `previous thread kept at ${backup}\n`,
+      );
+      if (after >= before) {
+        // Short threads cost more to summarise than to keep verbatim.
+        process.stderr.write(
+          "-- note: the summary is no smaller than the thread it replaced; " +
+            "/compact pays off on long threads (restore with the file above)\n",
+        );
+      }
+    }
     return 0;
   }
 

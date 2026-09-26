@@ -18,6 +18,7 @@ export const OPTIONS = {
   "all-matches": { type: "boolean" },
   "include-secrets": { type: "boolean" },
   new: { type: "boolean" },
+  compact: { type: "boolean" },
   reset: { type: "boolean" },
   session: { type: "string" },
   "show-session": { type: "boolean" },
@@ -40,6 +41,7 @@ export const VERBS: Readonly<Record<string, string>> = {
   "/new": "new",
   "/reset": "new",
   "/session": "show-session",
+  "/compact": "compact",
 };
 
 /** Every accepted flag spelling, e.g. `--model` and `-m`. */

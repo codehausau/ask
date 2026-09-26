@@ -7,6 +7,9 @@ import test from "node:test";
 import { collectContext } from "../src/context.ts";
 import {
   appendTurn,
+  applyCompaction,
+  backupSession,
+  buildCompactionPrompt,
   DEFAULT_SESSION_NAME,
   estimateTokens,
   loadSession,
@@ -17,6 +20,7 @@ import {
   sessionMessages,
   sessionPath,
   sessionRefs,
+  sessionTokens,
   stateDir,
   type Session,
 } from "../src/session.ts";
@@ -199,6 +203,102 @@ test("appendTurn preserves createdAt and advances updatedAt", () => {
 test("sessionLabel uses the repo name by default, the given name otherwise", () => {
   assert.equal(sessionLabel({ name: "default", scope: "/workspaces/tak/takbot" }), "takbot");
   assert.equal(sessionLabel({ name: "review", scope: "/workspaces/tak/takbot" }), "review");
+});
+
+test("compaction replaces the thread but keeps every attached file", () => {
+  const thread = session("/repo", [
+    { at: "1", question: "q1", refs: ["src/a.ts"], answer: "a1" },
+    { at: "2", question: "q2", refs: ["src/b.ts"], answer: "a2" },
+    { at: "3", question: "q3", refs: [], answer: "a3" },
+  ]);
+
+  const compacted = applyCompaction(thread, "- decided X\n- open: Y", new Date("2026-09-26T03:00:00.000Z"));
+
+  assert.equal(compacted.turns.length, 1);
+  const turn = compacted.turns[0]!;
+  assert.equal(turn.summary, true);
+  assert.equal(turn.covers, 3);
+  assert.equal(turn.answer, "- decided X\n- open: Y");
+  assert.deepEqual(turn.refs, ["src/a.ts", "src/b.ts"], "files stay attached");
+  assert.deepEqual(sessionRefs(compacted), ["src/a.ts", "src/b.ts"]);
+  assert.equal(compacted.updatedAt, "2026-09-26T03:00:00.000Z");
+  assert.equal(compacted.createdAt, thread.createdAt, "still the same thread");
+});
+
+test("compacting twice accumulates the covered count", () => {
+  const once = applyCompaction(
+    session("/repo", [
+      { at: "1", question: "q1", refs: [], answer: "a1" },
+      { at: "2", question: "q2", refs: [], answer: "a2" },
+    ]),
+    "first summary",
+  );
+  const twice = applyCompaction(
+    { ...once, turns: [...once.turns, { at: "3", question: "q3", refs: [], answer: "a3" }] },
+    "second summary",
+  );
+  assert.equal(twice.turns[0]?.covers, 3, "2 covered + 1 new");
+});
+
+test("a summary is sent as a stated summary, not a fake exchange", () => {
+  const compacted = applyCompaction(
+    session("/repo", [{ at: "1", question: "q1", refs: [], answer: "a1" }]),
+    "- decided X",
+  );
+  const withFollowUp: Session = {
+    ...compacted,
+    turns: [...compacted.turns, { at: "2", question: "q2", refs: [], answer: "a2" }],
+  };
+
+  assert.deepEqual(sessionMessages(withFollowUp), [
+    { role: "user", content: "<conversation-summary>\n- decided X\n</conversation-summary>" },
+    { role: "user", content: "q2" },
+    { role: "assistant", content: "a2" },
+  ]);
+});
+
+test("compaction shrinks the history token count", () => {
+  const thread = session(
+    "/repo",
+    [1, 2, 3].map((index) => ({
+      at: String(index),
+      question: `question ${index} `.repeat(40),
+      refs: [],
+      answer: `answer ${index} `.repeat(40),
+    })),
+  );
+  const before = sessionTokens(thread);
+  const after = sessionTokens(applyCompaction(thread, "- three points, briefly"));
+  assert.ok(after < before / 4, `expected a big reduction, got ${before} → ${after}`);
+});
+
+test("the compaction prompt includes every turn and its files", () => {
+  const prompt = buildCompactionPrompt(
+    session("/repo", [
+      { at: "1", question: "what does chat.ts do?", refs: ["src/chat.ts"], answer: "one request" },
+      { at: "2", question: "and refs.ts?", refs: [], answer: "resolution" },
+    ]),
+  );
+  assert.match(prompt, /what does chat\.ts do\?/);
+  assert.match(prompt, /files: src\/chat\.ts/);
+  assert.match(prompt, /one request/);
+  assert.match(prompt, /and refs\.ts\?/);
+  assert.match(prompt, /Compact the thread above/);
+});
+
+test("reset also removes the pre-compaction backup", async () => {
+  const { env } = await isolatedState();
+  const key = { scope: "/repo/one", name: DEFAULT_SESSION_NAME, env };
+  const thread = session("/repo/one", [
+    { at: "1", question: "q", refs: [], answer: "a" },
+  ]);
+
+  await saveSession(thread, env);
+  const backup = await backupSession(thread, env);
+  assert.equal((await stat(backup)).mode & 0o777, 0o600);
+
+  assert.equal(await resetSession(key), true);
+  await assert.rejects(() => stat(backup), /ENOENT/, "backup cleared too");
 });
 
 test("a session file inside a repo can never be attached", async () => {
