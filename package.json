@@ -4,7 +4,7 @@
   "private": true,
   "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
   "keywords": ["llm", "cli", "openai", "one-shot", "code-review"],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/codehausau/ask.git"
