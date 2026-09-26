@@ -24,9 +24,9 @@ export const OPTIONS = {
   "no-color": { type: "boolean" },
   switch: { type: "string" },
   "list-sessions": { type: "boolean" },
-  write: { type: "boolean" },
+  write: { type: "string" },
   create: { type: "string" },
-  diff: { type: "boolean" },
+  diff: { type: "string" },
   force: { type: "boolean" },
   reset: { type: "boolean" },
   session: { type: "string" },
@@ -59,7 +59,12 @@ export const VERBS: Readonly<Record<string, string>> = {
 };
 
 /** Verbs that consume the next positional as their value, e.g. `/switch docs`. */
-export const VERBS_WITH_VALUE: ReadonlySet<string> = new Set(["/switch", "/create"]);
+export const VERBS_WITH_VALUE: ReadonlySet<string> = new Set([
+  "/switch",
+  "/create",
+  "/write",
+  "/diff",
+]);
 
 /** Every accepted flag spelling, e.g. `--model` and `-m`. */
 export function flagSpellings(): string[] {

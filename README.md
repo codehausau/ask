@@ -166,7 +166,7 @@ $ ask @src/chat.ts review this for me
 
 | You type | You get |
 | --- | --- |
-| `@<TAB>` | with fzf, the picker; otherwise everything in the current directory, directories gaining a `/` so you can keep descending |
+| `@<TAB>` | with fzf, the picker — files **and directories**, so you can attach a whole tree; otherwise everything in the current directory, directories gaining a `/` so you can keep descending |
 | `@buried<TAB>` | plain mode: when nothing matches as a prefix, a recursive tree search — the same fallback the CLI performs, git-aware when available |
 | `<TAB>` on an empty first word | the verbs `/new`, `/reset`, `/session` |
 | `/<TAB>`, `/se<TAB>` | the verbs, filtered |
@@ -270,8 +270,8 @@ file does not exist.
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
 | `--create <path>` / `/create` | write a new file; refuses if it exists |
-| `--write` / `/write` | replace the single attached file with the answer |
-| `--diff` / `/diff` | show the proposed change, write nothing |
+| `--write <path>` / `/write <path>` | replace that file with the answer |
+| `--diff <path>` / `/diff <path>` | show the proposed change, write nothing |
 | `--force` | allow `--write` on a dirty or untracked file, and bypass the size check |
 | `--all-matches` | attach every search match instead of the single best one |
 | `--include-secrets` | stop skipping `.env`, `*.pem`, key-ish files |
@@ -322,19 +322,22 @@ for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
 
 ## Editing a file
 
-With exactly one file in context, `/write` replaces it with the model's answer,
-and `/diff` previews that without touching anything (`--write` and `--diff` are
-the flag aliases):
+`/write <path>` replaces that file with the model's answer, and `/diff <path>`
+previews the change without touching anything (`--write` and `--diff` are the
+flag aliases). **The target is named, never inferred** — the file is attached
+automatically, and any `@refs` you add are read-only references:
 
 ```console
-$ ask /diff '@src/chat.ts add a docstring to tokenLimitField'
+$ ask /write src/env.ts '@src/skip.ts match the comment style in skip.ts'
+
+$ ask /diff src/chat.ts 'add a docstring to tokenLimitField'
 diff --git a/src/chat.ts b/ask-proposed-chat.ts
 @@ -78,6 +78,10 @@
 +/**
 + * ...
 + */
 
-$ ask /write '@src/chat.ts add a docstring to tokenLimitField'
+$ ask /write src/chat.ts 'add a docstring to tokenLimitField'
 -- wrote src/chat.ts: 157 → 161 lines, 4.6 KB → 4.8 KB
 -- review with 'git diff', undo with 'git checkout --'
 ```
@@ -345,10 +348,10 @@ CLI writes. Every one of these must hold:
 
 | Refused when | Why |
 | --- | --- |
-| more or fewer than one file is attached | with two files there is no unambiguous target |
-| any `@ref` resolved to a directory | a directory holding one file would otherwise look like naming it |
-| the file was truncated by the context caps | the model never saw the end of it, so its answer would delete code |
-| something was piped in | the target would be ambiguous |
+| the target does not exist | that is `/create`'s job, and the message says so |
+| the target is not a regular file | a directory or device is not editable |
+| the target was not attached | the skip rules exclude credentials, lockfiles and binaries; writing one would rewrite it from contents the model never saw |
+| the target was truncated by the context caps | the model never saw the end of it, so its answer would delete code |
 | the response hit the token cap (`finish_reason: length`) | **the most dangerous case** — writing a truncated answer silently chops the file |
 | the response is empty | nothing to write |
 | the response is under 25% of the original size | looks like a partial answer rather than an edit (`--force` overrides) |
@@ -418,8 +421,8 @@ ask /new              # start a fresh thread and stop
 ask /session          # show the current thread, no API call
 ask /sessions         # list this repository's threads
 ask /switch <name>    # switch thread, creating it if new
-ask /write '<prompt>' # edit the single attached file
-ask /diff  '<prompt>' # preview that edit
+ask /write <path> '<prompt>'     # edit that file
+ask /diff  <path> '<prompt>'     # preview that edit
 ask /create <path> '<prompt>'   # write a new file
 ask /compact          # summarise the thread into notes, files stay attached
 ```

@@ -40,15 +40,27 @@ _ASK_VERBS="/compact /create /diff /new /reset /session /sessions /switch /write
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
 
-# Candidates for the picker: every tracked/untracked file, git-aware.
-# Directories are included so `@somedir` can attach a whole tree.
+# Candidates for the picker and the search fallback: every file, plus every
+# directory that contains one, so `@somedir` can attach a whole tree. Directories
+# are derived from the file list rather than walked separately, which keeps them
+# consistent with .gitignore.
 _ask_all_paths() {
+  local files
   if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    git ls-files --cached --others --exclude-standard 2> /dev/null
+    files=$(git ls-files --cached --others --exclude-standard 2> /dev/null)
   else
-    find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
-      -printf '%P\n' 2> /dev/null
-  fi | LC_ALL=C sort
+    files=$(find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
+      -printf '%P\n' 2> /dev/null)
+  fi
+
+  {
+    printf '%s\n' "$files"
+    # Each parent directory, with a trailing slash to mark it as one.
+    printf '%s\n' "$files" | awk -F/ 'NF > 1 {
+      prefix = ""
+      for (i = 1; i < NF; i++) { prefix = prefix $i "/"; print prefix }
+    }'
+  } | sed '/^$/d' | LC_ALL=C sort -u
 }
 
 # Recursive substring search, mirroring what `ask` does when @needle is not a

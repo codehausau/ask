@@ -5,7 +5,8 @@ import {
   checkCreateRequest,
   checkCreateResponse,
   CREATE_SYSTEM,
-  checkWriteRequest,
+  checkWriteTargetContext,
+  checkWriteTargetPath,
   checkWriteResponse,
   stripCodeFence,
   summariseChange,
@@ -38,35 +39,38 @@ test("unfenced content passes through byte-identical", () => {
   assert.deepEqual(stripCodeFence(source), { content: source, strippedFence: false });
 });
 
-test("a write needs exactly one attached file", () => {
-  const base = { hadDirectory: false, contextTruncated: false, hadStdin: false };
+test("the target must exist and be a regular file", () => {
+  const ok = { target: "src/chat.ts", exists: true, isFile: true };
+  assert.deepEqual(checkWriteTargetPath(ok), []);
 
-  assert.deepEqual(checkWriteRequest({ ...base, attachedFiles: ["a.ts"] }), []);
-
+  assert.match(checkWriteTargetPath({ ...ok, target: "  " })[0] ?? "", /needs a path/);
   assert.match(
-    checkWriteRequest({ ...base, attachedFiles: [] })[0] ?? "",
-    /exactly one file in context, but none/,
+    checkWriteTargetPath({ ...ok, exists: false })[0] ?? "",
+    /does not exist; use \/create/,
+    "creating is a different verb",
+  );
+  assert.match(checkWriteTargetPath({ ...ok, isFile: false })[0] ?? "", /not a regular file/);
+});
+
+test("the target must actually have reached the prompt", () => {
+  const base = { target: ".env", truncated: false };
+
+  // A target the skip rules exclude would be rewritten from contents the model
+  // never saw — silently emptying it.
+  assert.match(
+    checkWriteTargetContext({ ...base, attached: false })[0] ?? "",
+    /was not attached, so the model cannot see it/,
   );
   assert.match(
-    checkWriteRequest({ ...base, attachedFiles: ["a.ts", "b.ts"] })[0] ?? "",
-    /but 2 were attached: a\.ts, b\.ts/,
+    checkWriteTargetContext({ ...base, attached: true, truncated: true })[0] ?? "",
+    /truncated to fit the context caps/,
   );
 });
 
-test("a write refuses a directory, a truncated file, or piped input", () => {
-  const one = { attachedFiles: ["a.ts"], hadDirectory: false, contextTruncated: false, hadStdin: false };
-
-  // A directory containing a single file would otherwise look like naming it.
-  assert.match(checkWriteRequest({ ...one, hadDirectory: true })[0] ?? "", /cannot target a directory/);
-  // The model never saw the whole file, so writing its answer would delete code.
-  assert.match(checkWriteRequest({ ...one, contextTruncated: true })[0] ?? "", /never saw all of it/);
-  assert.match(checkWriteRequest({ ...one, hadStdin: true })[0] ?? "", /does not mix with piped input/);
-
-  // Problems accumulate rather than stopping at the first.
-  assert.equal(
-    checkWriteRequest({ attachedFiles: [], hadDirectory: true, contextTruncated: true, hadStdin: true })
-      .length,
-    4,
+test("the number of attached files no longer matters: the target is named", () => {
+  assert.deepEqual(
+    checkWriteTargetContext({ target: "src/env.ts", attached: true, truncated: false }),
+    [],
   );
 });
 

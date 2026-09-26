@@ -31,42 +31,59 @@ export function stripCodeFence(text: string): FenceResult {
   return { content: inner, strippedFence: true };
 }
 
-export interface WriteGuardInput {
-  /** Files resolved into context for this request. */
-  readonly attachedFiles: readonly string[];
-  /** True when any @ref resolved to a directory. */
-  readonly hadDirectory: boolean;
-  /** True when context collection truncated any file. */
-  readonly contextTruncated: boolean;
-  /** True when something was piped in. */
-  readonly hadStdin: boolean;
+export interface WriteTargetPath {
+  /** Path named on the command line. */
+  readonly target: string;
+  readonly exists: boolean;
+  readonly isFile: boolean;
 }
 
 /**
- * Checks that can run *before* spending tokens. Returns reasons to refuse.
+ * Checks on the path alone, run before context is even collected so that a
+ * missing target reports "use /create" rather than a reference-resolution error.
  */
-export function checkWriteRequest(input: WriteGuardInput): string[] {
+export function checkWriteTargetPath(input: WriteTargetPath): string[] {
+  if (input.target.trim().length === 0) {
+    return ["/write needs a path, e.g. /write src/chat.ts 'add a docstring'"];
+  }
+  if (!input.exists) {
+    return [`${input.target} does not exist; use /create to write a new file`];
+  }
+  if (!input.isFile) {
+    return [`${input.target} is not a regular file`];
+  }
+  return [];
+}
+
+export interface WriteTargetContext {
+  readonly target: string;
+  /** True when the target's contents reached the prompt. */
+  readonly attached: boolean;
+  /** True when the target was truncated to fit the context caps. */
+  readonly truncated: boolean;
+}
+
+/**
+ * Checks once context exists. The target is named explicitly rather than
+ * inferred, so other attached files are read-only references and their number
+ * is irrelevant.
+ */
+export function checkWriteTargetContext(input: WriteTargetContext): string[] {
   const problems: string[] = [];
 
-  if (input.attachedFiles.length !== 1) {
+  if (!input.attached) {
+    // A target excluded by the skip rules (a .env, a lockfile, something
+    // binary) would be rewritten from contents the model never saw.
     problems.push(
-      input.attachedFiles.length === 0
-        ? "--write needs exactly one file in context, but none was attached"
-        : `--write needs exactly one file in context, but ${input.attachedFiles.length} were attached: ` +
-          input.attachedFiles.join(", "),
+      `${input.target} was not attached, so the model cannot see it ` +
+        "(the skip rules exclude credentials, lockfiles and binaries; --include-secrets may help)",
     );
   }
-  if (input.hadDirectory) {
-    problems.push("--write cannot target a directory reference; name the file");
-  }
-  if (input.contextTruncated) {
+  if (input.truncated) {
     problems.push(
-      "the file was truncated to fit the context caps, so the model never saw all of it; " +
+      `${input.target} was truncated to fit the context caps, so the model never saw all of it; ` +
         "raise --max-file-bytes or split the file",
     );
-  }
-  if (input.hadStdin) {
-    problems.push("--write does not mix with piped input: the target would be ambiguous");
   }
   return problems;
 }

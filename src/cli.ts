@@ -33,7 +33,8 @@ import {
   checkCreateRequest,
   checkCreateResponse,
   CREATE_SYSTEM,
-  checkWriteRequest,
+  checkWriteTargetContext,
+  checkWriteTargetPath,
   checkWriteResponse,
   stripCodeFence,
   summariseChange,
@@ -485,9 +486,31 @@ async function main(argv: string[]): Promise<number> {
   const envReports = await applyEnvFiles(envCandidates());
 
   const createPath = flag("create");
+  // /write <path> and /diff <path>: the target is named, never inferred.
+  const writeTarget = flag("write") ?? flag("diff");
+  const writeMode = writeTarget !== undefined;
+  const diffOnly = flag("diff") !== undefined;
+
   const stdinText = await readStdin();
   const { refs, question } = extractRefs(positionals.join(" "));
   const turnRefs = [...refs, ...((values["file"] as string[] | undefined) ?? [])];
+  // The target must be in context for the model to edit it; naming it twice is
+  // harmless because references are deduplicated.
+  if (writeTarget !== undefined) {
+    const absolute = path.resolve(process.cwd(), writeTarget);
+    const info = await stat(absolute).catch(() => null);
+    const problems = checkWriteTargetPath({
+      target: writeTarget,
+      exists: info !== null,
+      isFile: info?.isFile() ?? false,
+    });
+    if (problems.length > 0) {
+      throw new ConfigError(
+        `cannot write:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`,
+      );
+    }
+    turnRefs.push(writeTarget);
+  }
 
   // Sessions are implicit for interactive runs only: a piped or scripted run
   // must stay reproducible. `--session <name>` forces them on regardless.
@@ -668,7 +691,7 @@ async function main(argv: string[]): Promise<number> {
     explicitSystem ??
     (createPath !== undefined
       ? CREATE_SYSTEM
-      : bool("write") || bool("diff")
+      : writeMode
         ? WRITE_SYSTEM
         : DEFAULT_SYSTEM);
 
@@ -706,7 +729,7 @@ async function main(argv: string[]): Promise<number> {
       target: createPath,
       exists,
       parentExists,
-      withEditFlags: bool("write") || bool("diff"),
+      withEditFlags: flag("write") !== undefined || flag("diff") !== undefined,
     });
     if (problems.length > 0) {
       throw new ConfigError(
@@ -715,15 +738,14 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  // --write and --diff: refuse before spending tokens, not after.
-  const writeMode = bool("write") || bool("diff");
-  const targetFile = context.blocks[0]?.path;
-  if (writeMode) {
-    const problems = checkWriteRequest({
-      attachedFiles: context.blocks.map((block) => block.path),
-      hadDirectory: context.directories.length > 0,
-      contextTruncated: context.truncated,
-      hadStdin: stdinText.length > 0,
+  // /write and /diff: the remaining checks need the collected context.
+  if (writeTarget !== undefined) {
+    const relative = path.relative(process.cwd(), path.resolve(process.cwd(), writeTarget));
+    const block = context.blocks.find((candidate) => candidate.path === relative);
+    const problems = checkWriteTargetContext({
+      target: writeTarget,
+      attached: block !== undefined,
+      truncated: block?.truncated ?? false,
     });
     if (problems.length > 0) {
       throw new ConfigError(`cannot write:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`);
@@ -826,9 +848,11 @@ async function main(argv: string[]): Promise<number> {
 
   // --write / --diff: the model returned a whole file, so check it and either
   // preview or replace. The model never chooses to write; this does.
-  if (writeMode && targetFile !== undefined) {
-    const absolute = path.resolve(process.cwd(), targetFile);
-    const original = context.blocks[0]?.text ?? "";
+  if (writeTarget !== undefined) {
+    const targetFile = path.relative(process.cwd(), path.resolve(process.cwd(), writeTarget));
+    const absolute = path.resolve(process.cwd(), writeTarget);
+    const original =
+      context.blocks.find((candidate) => candidate.path === targetFile)?.text ?? "";
     const { content, strippedFence } = stripCodeFence(result.text);
     // Preserve the file's trailing-newline convention.
     const proposed = original.endsWith("\n") && !content.endsWith("\n") ? `${content}\n` : content;
@@ -851,13 +875,13 @@ async function main(argv: string[]): Promise<number> {
     }
 
     const change = summariseChange(original, proposed);
-    if (proposed === original && !bool("diff")) {
+    if (proposed === original && !diffOnly) {
       status.note(`-- ${targetFile} unchanged`);
       writeSummary = `(no change to ${targetFile})`;
     }
 
     // Preview mode: show the diff, touch nothing.
-    if (bool("diff")) {
+    if (diffOnly) {
       const temporary = path.join(tmpdir(), `ask-proposed-${process.pid}-${path.basename(targetFile)}`);
       await writeFile(temporary, proposed);
       try {

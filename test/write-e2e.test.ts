@@ -110,7 +110,7 @@ test("--write replaces a clean tracked file", async () => {
   const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
   const { cwd, state } = await repo();
   try {
-    const run = await runCli(["--write", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    const run = await runCli(["/write", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
 
     assert.equal(run.code, 0, run.stderr);
     const written = await readFile(path.join(cwd, "widget.ts"), "utf8");
@@ -127,12 +127,12 @@ test("/write and /diff work as verbs", async () => {
   const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
   const { cwd, state } = await repo();
   try {
-    const preview = await runCli(["/diff", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    const preview = await runCli(["/diff", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
     assert.equal(preview.code, 0, preview.stderr);
     assert.match(preview.stdout, /^diff --git/m);
     assert.equal(await readFile(path.join(cwd, "widget.ts"), "utf8"), ORIGINAL, "untouched");
 
-    const applied = await runCli(["/write", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    const applied = await runCli(["/write", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
     assert.equal(applied.code, 0, applied.stderr);
     assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /value = 2/);
   } finally {
@@ -144,7 +144,7 @@ test("--diff previews and writes nothing", async () => {
   const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
   const { cwd, state } = await repo();
   try {
-    const run = await runCli(["--diff", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    const run = await runCli(["/diff", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
 
     assert.equal(run.code, 0, run.stderr);
     assert.match(run.stdout, /^diff --git/m);
@@ -163,7 +163,7 @@ test("a response truncated by the token cap is never written", async () => {
   }));
   const { cwd, state } = await repo();
   try {
-    const run = await runCli(["--write", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    const run = await runCli(["/write", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
 
     assert.equal(run.code, 2);
     assert.match(run.stderr, /hit the token cap and is incomplete/);
@@ -178,12 +178,12 @@ test("a dirty or untracked file is refused without --force", async () => {
   const { cwd, state } = await repo();
   try {
     await writeFile(path.join(cwd, "widget.ts"), `${ORIGINAL}// local edit\n`);
-    const dirty = await runCli(["--write", "@widget.ts bump"], { cwd, state, url: endpoint.url });
+    const dirty = await runCli(["/write", "widget.ts", "bump"], { cwd, state, url: endpoint.url });
     assert.equal(dirty.code, 2);
     assert.match(dirty.stderr, /uncommitted changes/);
     assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /local edit/, "kept");
 
-    const forced = await runCli(["--force", "--write", "@widget.ts bump"], {
+    const forced = await runCli(["--force", "/write", "widget.ts", "bump"], {
       cwd,
       state,
       url: endpoint.url,
@@ -192,7 +192,7 @@ test("a dirty or untracked file is refused without --force", async () => {
     assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /value = 2/);
 
     await writeFile(path.join(cwd, "fresh.ts"), ORIGINAL);
-    const untracked = await runCli(["--write", "@fresh.ts bump"], { cwd, state, url: endpoint.url });
+    const untracked = await runCli(["/write", "fresh.ts", "bump"], { cwd, state, url: endpoint.url });
     assert.equal(untracked.code, 2);
     assert.match(untracked.stderr, /not tracked by git/);
   } finally {
@@ -200,32 +200,37 @@ test("a dirty or untracked file is refused without --force", async () => {
   }
 });
 
-test("--write refuses before sending when the target is ambiguous", async () => {
-  const endpoint = await stub(() => ({ content: "unused" }));
+test("extra attached files are references, and a missing target is refused", async () => {
+  // Fixed reply: with two files attached, a stub that echoes "the file" cannot
+  // know which one is the target — that is the CLI's job, and what is tested.
+  const endpoint = await stub(() => ({
+    content: "export const value = 2;\n\n// keep this comment\n",
+  }));
   const { cwd, state } = await repo();
   try {
-    const two = await runCli(["--write", "@widget.ts @other.ts bump"], {
+    // Two files in context is now fine: the target is named, the other is a
+    // reference the model can read.
+    const run = await runCli(["/write", "widget.ts", "@other.ts bump, matching other.ts"], {
       cwd,
       state,
       url: endpoint.url,
     });
-    assert.equal(two.code, 2);
-    assert.match(two.stderr, /exactly one file in context, but 2/);
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /value = 2/);
+    assert.equal(await readFile(path.join(cwd, "other.ts"), "utf8"), "other\n", "reference untouched");
 
-    const piped = await runCli(["--write", "@widget.ts bump"], {
-      cwd,
-      state,
-      url: endpoint.url,
-      stdin: "context from a pipe\n",
-    });
-    assert.equal(piped.code, 2);
-    assert.match(piped.stderr, /does not mix with piped input/);
+    // A target that does not exist points at /create instead.
+    const missing = await runCli(["/write", "nope.ts", "bump"], { cwd, state, url: endpoint.url });
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /does not exist; use \/create/);
 
-    const directory = await runCli(["--write", "@. bump"], { cwd, state, url: endpoint.url });
-    assert.equal(directory.code, 2);
+    // A target the skip rules exclude cannot be written.
+    await writeFile(path.join(cwd, ".env"), "SECRET=1\n");
+    const secret = await runCli(["/write", ".env", "bump"], { cwd, state, url: endpoint.url });
+    assert.equal(secret.code, 2);
+    assert.match(secret.stderr, /was not attached/);
 
-    // No tokens were spent on any of them.
-    assert.equal(endpoint.count(), 0, "refused before the request");
+    assert.equal(endpoint.count(), 1, "only the successful write spent tokens");
   } finally {
     await endpoint.close();
   }
@@ -237,7 +242,7 @@ test("a code fence around the whole answer is stripped", async () => {
   }));
   const { cwd, state } = await repo();
   try {
-    const run = await runCli(["--write", "@widget.ts bump"], { cwd, state, url: endpoint.url });
+    const run = await runCli(["/write", "widget.ts", "bump"], { cwd, state, url: endpoint.url });
 
     assert.equal(run.code, 0, run.stderr);
     const written = await readFile(path.join(cwd, "widget.ts"), "utf8");
@@ -254,7 +259,7 @@ test("an unchanged answer neither writes nor claims to", async () => {
   const { cwd, state } = await repo();
   try {
     const before = await readFile(path.join(cwd, "widget.ts"), "utf8");
-    const run = await runCli(["--write", "@widget.ts bump"], { cwd, state, url: endpoint.url });
+    const run = await runCli(["/write", "widget.ts", "bump"], { cwd, state, url: endpoint.url });
 
     assert.equal(run.code, 0, run.stderr);
     assert.match(run.stderr, /widget\.ts unchanged/);
@@ -269,7 +274,7 @@ test("the thread records what was written, never the file contents", async () =>
   const { cwd, state } = await repo();
   try {
     // ASK_SESSION is 0 in runCli, so opt in explicitly for this one.
-    const child = await runCli(["--session", "w", "--write", "@widget.ts bump"], {
+    const child = await runCli(["--session", "w", "/write", "widget.ts", "bump"], {
       cwd,
       state,
       url: endpoint.url,

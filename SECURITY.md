@@ -78,8 +78,10 @@ The checks exist for specific failure modes rather than as ceremony:
 - **The file must be tracked and clean in git**, so `git diff` shows exactly what
   changed and `git checkout --` reverts it. `--force` bypasses this, at which
   point recovery is your responsibility.
-- **Ambiguity is refused before the request is sent**: more than one file, a
-  directory, or piped input.
+- **The target is named, not inferred.** `/write <path>` states which file is
+  being replaced; other attached files are read-only references. A target that
+  does not exist, is not a regular file, or was excluded by the skip rules is
+  refused before the request is sent.
 
 `--diff` performs the same request and prints a patch without writing, which is
 the safe way to inspect an edit first.
