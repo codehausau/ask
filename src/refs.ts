@@ -11,13 +11,17 @@
 // `src/chat.ts` is predictable, whereas subsequence matching turns `@cot` into
 // a lottery. For interactive fuzzy picking use `askf` (fzf) instead.
 
+import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { isSecretPath, LOCKFILES, SKIP_DIRS, SKIP_EXTENSIONS } from "./skip.ts";
 
+const execFileAsync = promisify(execFile);
+
 /** Hard stop on tree traversal, so a stray `@x` in `/` cannot hang the CLI. */
-export const MAX_SEARCH_ENTRIES = 20_000;
+export const MAX_SEARCH_ENTRIES = 50_000;
 
 export type RefKind = "path" | "glob" | "search";
 
@@ -34,6 +38,10 @@ export interface ResolveOptions {
   readonly includeSecrets?: boolean;
   /** Attach every match instead of erroring on an ambiguous search. */
   readonly allMatches?: boolean;
+  /** Traversal cap; exposed for tests. */
+  readonly maxEntries?: number;
+  /** Skip `git ls-files` and always walk the filesystem. */
+  readonly noGit?: boolean;
 }
 
 /** Raised when a reference matches nothing, or matches several things. */
@@ -105,21 +113,105 @@ interface TreeEntry {
   readonly isDirectory: boolean;
 }
 
+interface TreeListing {
+  readonly entries: readonly TreeEntry[];
+  /** True when the cap cut the listing short, so "no match" may be wrong. */
+  readonly truncated: boolean;
+  readonly source: "git" | "walk";
+}
+
+/** Would this relative path be attachable? Mirrors the collection filters. */
+function isSearchable(relative: string, includeSecrets: boolean): boolean {
+  const segments = relative.split("/");
+  if (segments.some((segment) => SKIP_DIRS.has(segment))) return false;
+
+  const base = segments[segments.length - 1] ?? "";
+  if (SKIP_EXTENSIONS.has(path.extname(base).toLowerCase())) return false;
+  if (LOCKFILES.has(base)) return false;
+  if (!includeSecrets && isSecretPath(relative)) return false;
+  return true;
+}
+
 /**
- * List the tree below `root`, applying the same skip rules as attachment so
- * search can only ever offer files that would actually be sent.
+ * Enumerate files with `git ls-files`, which respects .gitignore and so skips
+ * build output and caches that a raw walk would burn its budget on. Read-only,
+ * local, and never consulted for file *contents*. Returns null when the
+ * directory is not a git work tree, or git is unavailable.
  */
-async function listTree(root: string, includeSecrets: boolean): Promise<TreeEntry[]> {
+async function gitListing(root: string, includeSecrets: boolean, maxEntries: number): Promise<TreeListing | null> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync(
+      "git",
+      ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      { maxBuffer: 64 * 1024 * 1024, timeout: 5_000, windowsHide: true },
+    );
+    stdout = result.stdout;
+  } catch {
+    return null;
+  }
+
+  const relatives = stdout
+    .split("\0")
+    .filter((entry) => entry.length > 0 && isSearchable(entry, includeSecrets))
+    .sort((a, b) => a.localeCompare(b));
+
+  const truncated = relatives.length > maxEntries;
+  const kept = truncated ? relatives.slice(0, maxEntries) : relatives;
+
+  // Ancestor directories, so `@somedir` can match a directory name too.
+  const directories = new Set<string>();
+  for (const relative of kept) {
+    const segments = relative.split("/");
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      directories.add(segments.slice(0, depth).join("/"));
+    }
+  }
+
+  const entries: TreeEntry[] = [
+    ...[...directories]
+      .sort((a, b) => a.localeCompare(b))
+      .map((relative) => ({
+        relative,
+        absolute: path.resolve(root, relative),
+        isDirectory: true,
+      })),
+    ...kept.map((relative) => ({
+      relative,
+      absolute: path.resolve(root, relative),
+      isDirectory: false,
+    })),
+  ];
+
+  return { entries, truncated, source: "git" };
+}
+
+/**
+ * Filesystem fallback: walk the tree below `root`, applying the same skip rules
+ * as attachment so search can only ever offer files that would be sent.
+ */
+async function walkListing(
+  root: string,
+  includeSecrets: boolean,
+  maxEntries: number,
+): Promise<TreeListing> {
   const entries: TreeEntry[] = [];
+  let truncated = false;
 
   async function walk(dir: string): Promise<void> {
-    if (entries.length >= MAX_SEARCH_ENTRIES) return;
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      return;
+    }
 
     const dirEntries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     dirEntries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of dirEntries) {
-      if (entries.length >= MAX_SEARCH_ENTRIES) return;
+      if (entries.length >= maxEntries) {
+        truncated = true;
+        return;
+      }
 
       const absolute = path.join(dir, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join("/");
@@ -131,16 +223,28 @@ async function listTree(root: string, includeSecrets: boolean): Promise<TreeEntr
         continue;
       }
       if (!entry.isFile()) continue;
-      if (SKIP_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
-      if (LOCKFILES.has(entry.name)) continue;
-      if (!includeSecrets && isSecretPath(relative)) continue;
+      if (!isSearchable(relative, includeSecrets)) continue;
 
       entries.push({ relative, absolute, isDirectory: false });
     }
   }
 
   await walk(root);
-  return entries;
+  return { entries, truncated, source: "walk" };
+}
+
+/** Candidate set for glob and search: git-aware, with a filesystem fallback. */
+async function listTree(
+  root: string,
+  includeSecrets: boolean,
+  maxEntries: number,
+  noGit: boolean,
+): Promise<TreeListing> {
+  if (!noGit) {
+    const listing = await gitListing(root, includeSecrets, maxEntries);
+    if (listing) return listing;
+  }
+  return walkListing(root, includeSecrets, maxEntries);
 }
 
 /**
@@ -172,9 +276,22 @@ function sortCandidates(candidates: { entry: TreeEntry; rank: number }[]): TreeE
     .map((candidate) => candidate.entry);
 }
 
+/** Appended to "not found" messages when the listing was cut short. */
+function truncationHint(listing: TreeListing, maxEntries: number): string {
+  return listing.truncated
+    ? ` (search stopped after ${maxEntries} entries — name a path, or narrow the directory you run from)`
+    : "";
+}
+
 /** Resolve one `@ref` to concrete absolute paths. */
 export async function resolveRef(ref: string, options: ResolveOptions): Promise<Resolution> {
-  const { cwd, includeSecrets = false, allMatches = false } = options;
+  const {
+    cwd,
+    includeSecrets = false,
+    allMatches = false,
+    maxEntries = MAX_SEARCH_ENTRIES,
+    noGit = false,
+  } = options;
 
   // 1. An existing path always wins: no surprises, no tree walk.
   const literal = path.resolve(cwd, ref);
@@ -183,26 +300,32 @@ export async function resolveRef(ref: string, options: ResolveOptions): Promise<
 
   if (hasGlobMagic(ref)) {
     const pattern = globToRegExp(ref.split(path.sep).join("/"));
-    const tree = await listTree(cwd, includeSecrets);
-    const matches = tree.filter((entry) => !entry.isDirectory && pattern.test(entry.relative));
+    const listing = await listTree(cwd, includeSecrets, maxEntries, noGit);
+    const matches = listing.entries.filter(
+      (entry) => !entry.isDirectory && pattern.test(entry.relative),
+    );
 
     if (matches.length === 0) {
-      throw new RefResolutionError(`no file matches @${ref}`, ref);
+      throw new RefResolutionError(
+        `no file matches @${ref}${truncationHint(listing, maxEntries)}`,
+        ref,
+      );
     }
     return { ref, kind: "glob", paths: matches.map((entry) => entry.absolute) };
   }
 
   // 3. Plain text: ranked search.
-  const tree = await listTree(cwd, includeSecrets);
+  const listing = await listTree(cwd, includeSecrets, maxEntries, noGit);
   const scored: { entry: TreeEntry; rank: number }[] = [];
-  for (const entry of tree) {
+  for (const entry of listing.entries) {
     const rank = rankMatch(entry.relative, ref);
     if (rank !== null) scored.push({ entry, rank });
   }
 
   if (scored.length === 0) {
     throw new RefResolutionError(
-      `no such path, and nothing in the tree matched @${ref}`,
+      `no such path, and nothing in the tree matched @${ref}` +
+        truncationHint(listing, maxEntries),
       ref,
     );
   }

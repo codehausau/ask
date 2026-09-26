@@ -173,6 +173,14 @@ below apply to the search index too, so `node_modules`, binaries, lockfiles and
 credential-looking files are never matched. Every non-literal resolution is
 printed to stderr before the request goes out, so you always know what was sent.
 
+Inside a git work tree the candidate list comes from `git ls-files --cached
+--others --exclude-standard`, so `.gitignore` is respected and build output does
+not crowd out your source. This is the one subprocess `ask` runs: read-only,
+local, and never consulted for file *contents*. Outside a repo (or if git is
+missing) it falls back to a filesystem walk. Either way the listing is capped at
+50,000 entries, and if the cap bites, the error says so rather than claiming the
+file does not exist.
+
 ### Options
 
 | Flag | Meaning |

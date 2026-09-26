@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 import { collectContext } from "../src/context.ts";
 import { globToRegExp, hasGlobMagic, rankMatch, RefResolutionError, resolveRef } from "../src/refs.ts";
@@ -169,6 +173,56 @@ test("an unmatched name explains itself", async () => {
   await assert.rejects(
     () => resolveRef("nowhere", { cwd }),
     /no such path, and nothing in the tree matched @nowhere/,
+  );
+});
+
+test("git enumeration respects .gitignore", async () => {
+  const cwd = await fixture();
+  await mkdir(path.join(cwd, "junkcache"));
+  await writeFile(path.join(cwd, "junkcache", "widget.ts"), "ignored copy\n");
+  await writeFile(path.join(cwd, "src", "widget.ts"), "real one\n");
+  await writeFile(path.join(cwd, ".gitignore"), "junkcache/\n");
+  await execFileAsync("git", ["-C", cwd, "init", "-q"]);
+
+  // Both files rank identically, so without .gitignore this would be ambiguous.
+  const resolution = await resolveRef("widget", { cwd });
+  assert.deepEqual(
+    resolution.paths.map((absolute) => path.relative(cwd, absolute)),
+    [path.join("src", "widget.ts")],
+  );
+
+  // The filesystem fallback sees the ignored copy and reports the ambiguity.
+  const error = await resolveRef("widget", { cwd, noGit: true }).catch((caught: unknown) => caught);
+  assert.ok(error instanceof RefResolutionError);
+  // Shortest path first, per the documented tie-break.
+  assert.deepEqual(error.candidates, ["src/widget.ts", "junkcache/widget.ts"]);
+});
+
+test("a truncated listing says so instead of claiming no match", async () => {
+  const cwd = await fixture();
+
+  // maxEntries stands in for a tree too large to walk; the honest answer is
+  // "I stopped looking", not "it does not exist".
+  const error = await resolveRef("chat-helper", { cwd, noGit: true, maxEntries: 2 }).catch(
+    (caught: unknown) => caught,
+  );
+  assert.ok(error instanceof RefResolutionError);
+  assert.match(error.message, /search stopped after 2 entries/);
+
+  // Same cap, but the file is found before the cap bites: no complaint.
+  const found = await resolveRef("notes", { cwd, noGit: true, maxEntries: 500 });
+  assert.equal(path.basename(found.paths[0] ?? ""), "notes.md");
+});
+
+test("directories are searchable under git enumeration too", async () => {
+  const cwd = await fixture();
+  await execFileAsync("git", ["-C", cwd, "init", "-q"]);
+
+  const resolution = await resolveRef("nested", { cwd });
+  assert.equal(resolution.kind, "search");
+  assert.deepEqual(
+    resolution.paths.map((absolute) => path.relative(cwd, absolute)),
+    [path.join("src", "deep", "nested")],
   );
 });
 

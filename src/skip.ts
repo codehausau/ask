@@ -23,6 +23,21 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   ".venv",
   "__pycache__",
   ".terraform",
+  // Caches and scratch dirs. These are frequently untracked-but-not-ignored,
+  // so git enumeration alone does not exclude them, and a single one can hold
+  // tens of thousands of entries.
+  ".tmp",
+  ".cache",
+  ".pre-commit-cache",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".parcel-cache",
+  ".vite",
+  ".svelte-kit",
+  ".astro",
+  ".dart_tool",
 ]);
 
 /** Extensions treated as non-text and skipped during directory walks. */

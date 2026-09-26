@@ -20,6 +20,7 @@ will *not* do.
 | Only one SDK method is reachable | `createClient` returns a one-method `ChatClient`, not the SDK client |
 | The model cannot choose what it reads | Context comes only from `@paths` and `-f` flags you pass |
 | Nothing is written to your filesystem | Output goes to stdout / stderr only |
+| Only one subprocess, read-only | `git ls-files` enumerates candidate paths for `@search`; it never reads file contents and is skipped outside a git work tree |
 | Credentials are not attached by accident | `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `credentials.json` and similar are skipped even when named explicitly, unless `--include-secrets` |
 | You can see the payload before sending | `--dry-run` prints the exact JSON body; `--show-context` lists attachments and never calls the API |
 
