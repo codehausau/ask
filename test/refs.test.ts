@@ -9,7 +9,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 import { collectContext } from "../src/context.ts";
-import { globToRegExp, hasGlobMagic, rankMatch, RefResolutionError, resolveRef } from "../src/refs.ts";
+import {
+  globToRegExp,
+  hasGlobMagic,
+  rankMatch,
+  RefResolutionError,
+  repairSpacedRefs,
+  resolveRef,
+} from "../src/refs.ts";
 
 /**
  *   src/chat.ts          src/deep/nested/chat-helper.ts
@@ -243,4 +250,70 @@ test("collectContext reports how each reference resolved", async () => {
     context.blocks.map((block) => block.path),
     [path.join("src", "cli.ts"), path.join("src", "chat.ts"), path.join("src", "context.ts")],
   );
+});
+
+test("a reference split by a filename's spaces is rejoined", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-spaces-"));
+  await mkdir(path.join(cwd, "tender_docs"), { recursive: true });
+  await writeFile(path.join(cwd, "tender_docs", "101521 Quotation.txt"), "quote\n");
+  await writeFile(
+    path.join(cwd, "tender_docs", "101521 RFQTS Joint Data Networks (JDN).txt"),
+    "rfq\n",
+  );
+
+  // The reported case: the space ended the reference, leaving it ambiguous.
+  const fixed = await repairSpacedRefs(
+    ["tender_docs/101521"],
+    "Quotation.txt what is this doc",
+    cwd,
+  );
+  assert.deepEqual(fixed.refs, ["tender_docs/101521 Quotation.txt"]);
+  assert.equal(fixed.question, "what is this doc");
+  assert.deepEqual(fixed.repaired, ["tender_docs/101521 Quotation.txt"]);
+
+  // Several spaces in one name.
+  const longer = await repairSpacedRefs(
+    ["tender_docs/101521"],
+    "RFQTS Joint Data Networks (JDN).txt summarise",
+    cwd,
+  );
+  assert.deepEqual(longer.refs, ["tender_docs/101521 RFQTS Joint Data Networks (JDN).txt"]);
+  assert.equal(longer.question, "summarise");
+});
+
+test("rejoining never eats question text that is not part of a path", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-spaces-"));
+  await writeFile(path.join(cwd, "notes.md"), "n\n");
+
+  // A reference that already resolves is untouched.
+  const exact = await repairSpacedRefs(["notes.md"], "notes.md is not a path word", cwd);
+  assert.deepEqual(exact.refs, ["notes.md"]);
+  assert.equal(exact.question, "notes.md is not a path word", "question preserved");
+
+  // A reference that resolves to nothing and cannot grow is left as it was, for
+  // the resolver to report properly.
+  const hopeless = await repairSpacedRefs(["nothing"], "like this at all", cwd);
+  assert.deepEqual(hopeless.refs, ["nothing"]);
+  assert.equal(hopeless.question, "like this at all");
+  assert.deepEqual(hopeless.repaired, []);
+});
+
+test("the longest existing path wins when names share a prefix", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-spaces-"));
+  await writeFile(path.join(cwd, "report final.md"), "a\n");
+  await writeFile(path.join(cwd, "report final draft.md"), "b\n");
+
+  const fixed = await repairSpacedRefs(["report"], "final draft.md review this", cwd);
+  assert.deepEqual(fixed.refs, ["report final draft.md"], "greedy, not first-match");
+  assert.equal(fixed.question, "review this");
+});
+
+test("a directory with spaces can be rejoined too", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-spaces-"));
+  await mkdir(path.join(cwd, "my docs"), { recursive: true });
+  await writeFile(path.join(cwd, "my docs", "a.md"), "a\n");
+
+  const fixed = await repairSpacedRefs(["my"], "docs summarise these", cwd);
+  assert.deepEqual(fixed.refs, ["my docs"]);
+  assert.equal(fixed.question, "summarise these");
 });

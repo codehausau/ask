@@ -220,6 +220,7 @@ Three cases, tried in order, so the cheap and unambiguous ones win:
 | You write | Meaning |
 | --- | --- |
 | `@src/chat.ts`, `@src` | **path** — it exists on disk, used verbatim, no searching |
+| `@"name with spaces.md"` | **quoted path** — the explicit way to name a file whose name contains spaces |
 | `@'src/**/*.ts'` | **glob** — `*` and `?` stay within a path segment, `**` crosses them. Quote it, or the shell expands it first |
 | `@chat` | **search** — ranked substring search over the tree |
 
@@ -243,6 +244,43 @@ ask: @dup matches 2 paths equally well
       b/dup.ts
       name one of them, use a glob, or pass --all-matches
 ```
+
+### Filenames with spaces
+
+A space would otherwise end the reference, so `@tender/101521 Quotation.docx`
+would look for `tender/101521`. Two ways through:
+
+```bash
+ask '@"tender/101521 Quotation.docx" what is this'   # explicit
+ask '@tender/101521 Quotation.docx what is this'     # also works
+```
+
+The second works because a reference that resolves to nothing tries absorbing
+the words that follow it, and keeps the **longest** result that is a real path:
+
+```
+-- read @tender/101521 Quotation.docx as one path (spaces)
+```
+
+Only an existing path can absorb words, so this cannot quietly eat question text.
+`-f 'name with spaces.md'` remains available and needs no `@` at all.
+
+### Binary documents are not attachable
+
+`.docx`, `.xlsx`, `.pptx` and `.pdf` are archives or binary formats, so there is
+nothing useful to send as text and `ask` refuses rather than attaching noise:
+
+```console
+$ ask '@quote.docx what is this doc'
+-- quote.docx is not text, so nothing was attached
+-- convert it and pipe the text in instead, e.g.
+--   pandoc -t plain 'quote.docx' | ask 'what is this document?'
+--   pdftotext file.pdf - | ask 'summarise this'
+```
+
+Piping is the answer: conversion belongs to tools that do it well, and keeping it
+outside `ask` means no extra subprocess or dependency in a tool whose trust story
+is its smallness.
 
 Search only ever offers files that would actually be attached — the skip rules
 below apply to the search index too, so `node_modules`, binaries, lockfiles and

@@ -46,6 +46,9 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
 export const SKIP_EXTENSIONS: ReadonlySet<string> = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svgz",
   ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+  // Office documents are zip containers: binary, and unreadable as text.
+  ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt",
+  ".odt", ".ods", ".odp", ".rtf", ".epub",
   ".mp3", ".mp4", ".mov", ".avi", ".wav", ".ogg", ".webm",
   ".woff", ".woff2", ".ttf", ".otf", ".eot",
   ".so", ".dylib", ".dll", ".exe", ".bin", ".class", ".jar", ".apk", ".aab",

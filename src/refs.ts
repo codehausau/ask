@@ -341,3 +341,63 @@ export async function resolveRef(ref: string, options: ResolveOptions): Promise<
 
   return { ref, kind: "search", paths: [best[0]!.absolute] };
 }
+
+/** How many following words a spaced reference may absorb. */
+const MAX_SPACED_REF_WORDS = 12;
+
+export interface RepairedPrompt {
+  readonly refs: readonly string[];
+  readonly question: string;
+  /** References that grew by absorbing question words, for reporting. */
+  readonly repaired: readonly string[];
+}
+
+/**
+ * Rejoin a reference that a filename's spaces split apart.
+ *
+ * `@tender_docs/101521 Quotation.docx what is this` parses as the reference
+ * `tender_docs/101521` plus a question starting "Quotation.docx" — so the
+ * reference matches nothing, or worse, matches several files ambiguously.
+ *
+ * Only an *existing path* can absorb words, and the longest one wins, so this
+ * cannot quietly eat question text that was never part of a filename. Quoting
+ * (`@"name with spaces.md"`) remains the explicit way to do it.
+ */
+export async function repairSpacedRefs(
+  refs: readonly string[],
+  question: string,
+  cwd: string = process.cwd(),
+): Promise<RepairedPrompt> {
+  const words = question.length > 0 ? question.split(/\s+/) : [];
+  const grown: string[] = [];
+  const repaired: string[] = [];
+
+  for (const ref of refs) {
+    // A reference that already resolves is left alone.
+    if (await stat(path.resolve(cwd, ref)).then(() => true, () => false)) {
+      grown.push(ref);
+      continue;
+    }
+
+    let best: { ref: string; consumed: number } | null = null;
+    let candidate = ref;
+    for (let count = 1; count <= Math.min(MAX_SPACED_REF_WORDS, words.length); count += 1) {
+      candidate = `${candidate} ${words[count - 1]}`;
+      const exists = await stat(path.resolve(cwd, candidate)).then(
+        (info) => info.isFile() || info.isDirectory(),
+        () => false,
+      );
+      if (exists) best = { ref: candidate, consumed: count };
+    }
+
+    if (best) {
+      grown.push(best.ref);
+      repaired.push(best.ref);
+      words.splice(0, best.consumed);
+    } else {
+      grown.push(ref);
+    }
+  }
+
+  return { refs: grown, question: words.join(" "), repaired };
+}

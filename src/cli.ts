@@ -51,7 +51,7 @@ import {
   WRITE_SYSTEM,
 } from "./write.ts";
 import { OPTIONS, VERBS, VERBS_WITH_VALUE } from "./options.ts";
-import { RefResolutionError, resolveRef } from "./refs.ts";
+import { RefResolutionError, repairSpacedRefs, resolveRef } from "./refs.ts";
 import {
   appendTurn,
   applyCompaction,
@@ -583,7 +583,17 @@ async function main(argv: string[]): Promise<number> {
   const diffOnly = flag("diff") !== undefined;
 
   const stdinText = await readStdin();
-  const { refs, question } = extractRefs(positionals.join(" "));
+  const parsed = extractRefs(positionals.join(" "));
+  // A filename's spaces split its reference in two; rejoin when the longer form
+  // is a real path. Quoting (@"name with spaces.md") is the explicit way.
+  const { refs, question, repaired } = await repairSpacedRefs(
+    parsed.refs,
+    parsed.question,
+    process.cwd(),
+  );
+  for (const ref of repaired) {
+    if (!bool("quiet") && !bool("json")) status.note(`-- read @${ref} as one path (spaces)`);
+  }
   const turnRefs = [...refs, ...((values["file"] as string[] | undefined) ?? [])];
   // The target must be in context for the model to edit it; naming it twice is
   // harmless because references are deduplicated.
@@ -779,6 +789,21 @@ async function main(argv: string[]): Promise<number> {
     for (const skill of skills) {
       const how = skill.matched === "search" ? " [search]" : "";
       status.note(`-- skill ${skill.name}${how}`);
+    }
+  }
+
+  // Nothing attached, but something was asked for: say why, and how to fix it.
+  if (context.blocks.length === 0 && allRefs.length > 0 && !bool("quiet")) {
+    const binary = context.skipped.filter(
+      (item) => item.reason === "binary-content" || item.reason === "binary-extension",
+    );
+    for (const item of binary) {
+      status.warn(`-- ${item.path} is not text, so nothing was attached`);
+    }
+    if (binary.length > 0) {
+      status.note("-- convert it and pipe the text in instead, e.g.");
+      status.note(`--   pandoc -t plain '${binary[0]?.path}' | ask 'what is this document?'`);
+      status.note("--   pdftotext file.pdf - | ask 'summarise this'");
     }
   }
 

@@ -101,12 +101,25 @@ export function resolveLimits(overrides: LimitOverrides = {}): Limits {
 
 /**
  * Split a prompt into `@ref` references and the remaining question text.
- * A bare `@` stays in the question.
+ *
+ * A bare `@` stays in the question. A reference containing spaces can be quoted
+ * — `@"name with spaces.md"` or `@'name with spaces.md'` — since the shell has
+ * already consumed the outer quotes by the time the prompt arrives here.
  */
 export function extractRefs(prompt: string | undefined): ExtractedPrompt {
+  const text = String(prompt ?? "");
   const refs: string[] = [];
   const words: string[] = [];
-  for (const token of String(prompt ?? "").split(/\s+/)) {
+
+  // Matches a quoted reference, an unquoted reference, or a plain word.
+  const pattern = /@"([^"]*)"|@'([^']*)'|(\S+)/g;
+  for (const match of text.matchAll(pattern)) {
+    const quoted = match[1] ?? match[2];
+    if (quoted !== undefined) {
+      refs.push(quoted);
+      continue;
+    }
+    const token = match[3] ?? "";
     if (token.length > 1 && token.startsWith("@")) {
       // Trailing punctuation is common in natural prompts: "@src/a.ts,"
       refs.push(token.slice(1).replace(/[,;:]$/, ""));

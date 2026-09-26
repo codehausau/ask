@@ -32,6 +32,22 @@ test("extractRefs splits @paths from the question", () => {
   assert.equal(question, "review these for me");
 });
 
+test("a reference with spaces can be quoted", () => {
+  // The shell strips the outer quotes, so these arrive with inner quotes intact.
+  assert.deepEqual(extractRefs('@"tender docs/101521 Quotation.docx" what is this'), {
+    refs: ["tender docs/101521 Quotation.docx"],
+    question: "what is this",
+  });
+  assert.deepEqual(extractRefs("@'a b.md' and @'c d.md' compare"), {
+    refs: ["a b.md", "c d.md"],
+    question: "and compare",
+  });
+  // Empty quotes are a reference to nothing, not a crash.
+  assert.deepEqual(extractRefs('@"" hello').refs, [""]);
+  // Quoting is not required for ordinary paths.
+  assert.deepEqual(extractRefs("@src/a.ts review"), { refs: ["src/a.ts"], question: "review" });
+});
+
 test("extractRefs leaves a bare @ in the question", () => {
   const { refs, question } = extractRefs("what does @ mean here?");
   assert.deepEqual(refs, []);
