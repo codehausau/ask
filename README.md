@@ -269,8 +269,8 @@ file does not exist.
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
 | `--token-field <name>` | force `max_tokens` or `max_completion_tokens` |
 | `--max-file-bytes` / `--max-total-bytes` / `--max-files` | context caps |
-| `--write` | replace the single attached file with the answer |
-| `--diff` | show the proposed change, write nothing |
+| `--write` / `/write` | replace the single attached file with the answer |
+| `--diff` / `/diff` | show the proposed change, write nothing |
 | `--force` | allow `--write` on a dirty or untracked file, and bypass the size check |
 | `--all-matches` | attach every search match instead of the single best one |
 | `--include-secrets` | stop skipping `.env`, `*.pem`, key-ish files |
@@ -321,18 +321,19 @@ for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
 
 ## Editing a file
 
-With exactly one file in context, `--write` replaces it with the model's answer,
-and `--diff` previews that without touching anything:
+With exactly one file in context, `/write` replaces it with the model's answer,
+and `/diff` previews that without touching anything (`--write` and `--diff` are
+the flag aliases):
 
 ```console
-$ ask --diff '@src/chat.ts add a docstring to tokenLimitField'
+$ ask /diff '@src/chat.ts add a docstring to tokenLimitField'
 diff --git a/src/chat.ts b/ask-proposed-chat.ts
 @@ -78,6 +78,10 @@
 +/**
 + * ...
 + */
 
-$ ask --write '@src/chat.ts add a docstring to tokenLimitField'
+$ ask /write '@src/chat.ts add a docstring to tokenLimitField'
 -- wrote src/chat.ts: 157 → 161 lines, 4.6 KB → 4.8 KB
 -- review with 'git diff', undo with 'git checkout --'
 ```
@@ -388,6 +389,8 @@ ask /new              # start a fresh thread and stop
 ask /session          # show the current thread, no API call
 ask /sessions         # list this repository's threads
 ask /switch <name>    # switch thread, creating it if new
+ask /write '<prompt>' # edit the single attached file
+ask /diff  '<prompt>' # preview that edit
 ask /compact          # summarise the thread into notes, files stay attached
 ```
 

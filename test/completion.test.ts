@@ -78,13 +78,17 @@ test("/verbs complete as the first word only", async () => {
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", "/"), [
     "/compact",
+    "/diff",
     "/new",
     "/reset",
     "/session",
     "/sessions",
     "/switch",
+    "/write",
   ]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/c"), ["/compact"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/w"), ["/write"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/d"), ["/diff"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session", "/sessions"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/sw"), ["/switch"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/n"), ["/new"]);
@@ -96,11 +100,13 @@ test("an empty first word lists the verbs, so they are discoverable", async () =
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", ""), [
     "/compact",
+    "/diff",
     "/new",
     "/reset",
     "/session",
     "/sessions",
     "/switch",
+    "/write",
   ]);
   // Mid-question, TAB stays silent rather than suggesting verbs.
   assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", ""), []);

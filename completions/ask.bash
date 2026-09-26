@@ -34,7 +34,7 @@ _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --dry-run --fil
 --temperature --token-field --version -V -f -h -m -q -s"
 
 # Chat-style verbs, accepted as the first word after `ask`.
-_ASK_VERBS="/compact /new /reset /session /sessions /switch"
+_ASK_VERBS="/compact /diff /new /reset /session /sessions /switch /write"
 
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}

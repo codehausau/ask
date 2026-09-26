@@ -52,6 +52,8 @@ export const VERBS: Readonly<Record<string, string>> = {
   "/sessions": "list-sessions",
   "/compact": "compact",
   "/switch": "switch",
+  "/write": "write",
+  "/diff": "diff",
 };
 
 /** Verbs that consume the next positional as their value, e.g. `/switch docs`. */

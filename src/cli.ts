@@ -75,8 +75,8 @@ Usage
   <command> | ask [options] '<prompt>'
 
 Editing a file
-  With exactly one file attached, --write replaces it with the model's answer,
-  and --diff previews that without writing. Refused if the file is not tracked
+  With exactly one file attached, /write (or --write) replaces it with the
+  model's answer, and /diff (or --diff) previews that without writing. Refused if the file is not tracked
   and clean in git (--force overrides), if the file was truncated to fit the
   context, or if the answer hit the token cap.
 
@@ -89,6 +89,8 @@ Sessions
   ask /session           show the current thread, no API call
   ask /sessions          list the threads for this repository
   ask /switch <name>     switch to a thread, creating it if new
+  ask /write '<prompt>'  edit the single attached file (alias of --write)
+  ask /diff '<prompt>'   preview that edit without writing (alias of --diff)
   ask /compact           summarise the thread into notes, keeping files attached
   --no-session           one-shot, ignoring and not touching the thread
 
@@ -118,8 +120,8 @@ Options
       --max-file-bytes <n>  per-file cap before truncation (default 262144)
       --max-total-bytes <n> total context cap (default 1048576)
       --max-files <n>       max files from directory walks (default 200)
-      --write               replace the single attached file with the answer
-      --diff                show the proposed change, write nothing
+      --write               alias of /write
+      --diff                alias of /diff
       --force               allow --write on a dirty or untracked file
       --all-matches         attach every search match instead of the best one
       --include-secrets     do not skip .env / *.pem / key-ish files

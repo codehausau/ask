@@ -123,6 +123,23 @@ test("--write replaces a clean tracked file", async () => {
   }
 });
 
+test("/write and /diff work as verbs", async () => {
+  const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
+  const { cwd, state } = await repo();
+  try {
+    const preview = await runCli(["/diff", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    assert.equal(preview.code, 0, preview.stderr);
+    assert.match(preview.stdout, /^diff --git/m);
+    assert.equal(await readFile(path.join(cwd, "widget.ts"), "utf8"), ORIGINAL, "untouched");
+
+    const applied = await runCli(["/write", "@widget.ts bump it"], { cwd, state, url: endpoint.url });
+    assert.equal(applied.code, 0, applied.stderr);
+    assert.match(await readFile(path.join(cwd, "widget.ts"), "utf8"), /value = 2/);
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("--diff previews and writes nothing", async () => {
   const endpoint = await stub((file) => ({ content: file.replace("value = 1", "value = 2") }));
   const { cwd, state } = await repo();
