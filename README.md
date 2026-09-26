@@ -149,6 +149,8 @@ $ ask @src/chat.ts review this for me
 | --- | --- |
 | `@<TAB>` | with fzf, the picker; otherwise everything in the current directory, directories gaining a `/` so you can keep descending |
 | `@buried<TAB>` | plain mode: when nothing matches as a prefix, a recursive tree search — the same fallback the CLI performs, git-aware when available |
+| `<TAB>` on an empty first word | the verbs `/new`, `/reset`, `/session` |
+| `/<TAB>`, `/se<TAB>` | the verbs, filtered |
 | `-<TAB>` / `--max-t<TAB>` | flags |
 | `--token-field <TAB>` | `max_tokens`, `max_completion_tokens` |
 | `-m <TAB>` | models listed in `$ASK_MODELS`, if you export it |

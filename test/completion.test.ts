@@ -78,8 +78,16 @@ test("/verbs complete as the first word only", async () => {
   const cwd = await fixture();
   assert.deepEqual(await complete(cwd, 1, "ask", "/"), ["/new", "/reset", "/session"]);
   assert.deepEqual(await complete(cwd, 1, "ask", "/se"), ["/session"]);
+  assert.deepEqual(await complete(cwd, 1, "ask", "/n"), ["/new"]);
   // Later on the line, a slash is more likely an absolute path than a verb.
   assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", "/nonexistent-xyz"), []);
+});
+
+test("an empty first word lists the verbs, so they are discoverable", async () => {
+  const cwd = await fixture();
+  assert.deepEqual(await complete(cwd, 1, "ask", ""), ["/new", "/reset", "/session"]);
+  // Mid-question, TAB stays silent rather than suggesting verbs.
+  assert.deepEqual(await complete(cwd, 2, "ask", "@a.ts", ""), []);
 });
 
 test("--token-field offers only the two valid values", async () => {

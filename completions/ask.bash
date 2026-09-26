@@ -174,6 +174,14 @@ _ask_complete() {
         _ask_paths "$cur" ""
       fi
       ;;
+    "")
+      # TAB on an empty first word: show the verbs, so they are discoverable
+      # without having to know that `/` is the trigger. Later words are the
+      # free-text question, where suggestions would only be noise.
+      if [ "$COMP_CWORD" -eq 1 ]; then
+        mapfile -t COMPREPLY < <(compgen -W "$_ASK_VERBS" -- "$cur")
+      fi
+      ;;
   esac
   return 0
 }
