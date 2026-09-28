@@ -53,6 +53,9 @@ jobs:
             exit 1
           fi
 
+      # prepack builds too, but stating it here keeps the order obvious.
+      - run: pnpm build
+
       - name: Pack
         id: pack
         run: |
@@ -60,15 +63,22 @@ jobs:
           pnpm pack --pack-destination dist-release
           echo "tarball=$(ls dist-release/*.tgz)" >> "$GITHUB_OUTPUT"
 
+      # Installing our own freshly built tarball is the point of this step, so
+      # the lack of a lockfile here is intentional.
+      #
+      # It must run from a directory containing no package.json: `npm install
+      # --global <tarball>` from inside the package's own root hangs
+      # indefinitely, which is what failed the first tagged release while the
+      # identical check in ci.yml passed — that one already ran in RUNNER_TEMP.
       - name: Verify the tarball installs and runs
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-        # Installing our own freshly built tarball is the point of this step, so
-        # the lack of a lockfile here is intentional.
         # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
-          npm install --global "$TARBALL"
+          cp "$TARBALL" "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          npm install --global "./$(basename "$TARBALL")"
           ask --version
           ask --help > /dev/null
 
