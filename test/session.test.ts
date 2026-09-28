@@ -8,6 +8,10 @@ import { collectContext } from "../src/context.ts";
 import {
   appendTurn,
   applyCompaction,
+  archiveSession,
+  archiveSuffix,
+  KEEP_ARCHIVES,
+  pruneArchives,
   backupSession,
   buildCompactionPrompt,
   clearCurrentSession,
@@ -498,4 +502,90 @@ test("a session file inside a repo can never be attached", async () => {
     ["real.ts"],
     ".ask is skipped, so the model never reads its own transcript back",
   );
+});
+
+test("/new files a thread away instead of destroying it", async () => {
+  const { env } = await isolatedState();
+  const key = { scope: "/repo", name: DEFAULT_SESSION_NAME, env };
+  const thread = session("/repo", [
+    { at: "1", question: "q1", refs: ["a.ts"], answer: "a1" },
+    { at: "2", question: "q2", refs: [], answer: "a2" },
+  ]);
+  await saveSession(thread, env);
+
+  const archived = await archiveSession(thread, env, new Date("2026-09-28T10:32:00Z"));
+  assert.equal(archived, `default-${archiveSuffix(new Date("2026-09-28T10:32:00Z"))}`);
+
+  // The slot is empty, and the conversation is still readable under its new name.
+  assert.equal(await loadSession(key, 0), null, "slot cleared");
+  const kept = await loadSession({ scope: "/repo", name: archived!, env }, 0);
+  assert.equal(kept?.turns.length, 2, "turns preserved");
+  assert.equal(kept?.archivedFrom, DEFAULT_SESSION_NAME);
+  assert.deepEqual(sessionRefs(kept), ["a.ts"], "and its files");
+});
+
+test("an empty thread is not worth archiving", async () => {
+  const { env } = await isolatedState();
+  assert.equal(await archiveSession(session("/repo"), env), null);
+  assert.deepEqual(await listSessions("/repo", env), [], "no empty archives left behind");
+});
+
+test("two archives in the same minute do not collide", async () => {
+  const { env } = await isolatedState();
+  const at = new Date("2026-09-28T10:32:00Z");
+  const first = session("/repo", [{ at: "1", question: "q", refs: [], answer: "a" }]);
+
+  const one = await archiveSession(first, env, at);
+  const two = await archiveSession({ ...first, name: DEFAULT_SESSION_NAME }, env, at);
+
+  assert.notEqual(one, two);
+  assert.match(two ?? "", /-2$/);
+  const names = (await listSessions("/repo", env)).map((summary) => summary.name).sort();
+  assert.deepEqual(names, [one, two].sort());
+});
+
+test("archives are listed as archived, newest first", async () => {
+  const { env } = await isolatedState();
+  const turn = { at: "1", question: "q", refs: [], answer: "a" };
+
+  await archiveSession(
+    { ...session("/repo", [turn]), updatedAt: "2026-09-27T00:00:00.000Z" },
+    env,
+    new Date("2026-09-27T09:00:00Z"),
+  );
+  await archiveSession(
+    { ...session("/repo", [turn]), updatedAt: "2026-09-28T00:00:00.000Z" },
+    env,
+    new Date("2026-09-28T09:00:00Z"),
+  );
+
+  const listed = await listSessions("/repo", env);
+  assert.equal(listed.length, 2);
+  assert.ok(listed.every((summary) => summary.archivedFrom === DEFAULT_SESSION_NAME));
+  assert.ok(
+    (listed[0]?.name ?? "") > (listed[1]?.name ?? ""),
+    "newest first, so the oldest is the one pruned",
+  );
+});
+
+test("only the newest archives are kept", async () => {
+  const { env } = await isolatedState();
+  const turn = { at: "1", question: "q", refs: [], answer: "a" };
+
+  // One more than the limit, each a minute apart so the names are distinct.
+  for (let index = 0; index <= KEEP_ARCHIVES; index += 1) {
+    const at = new Date(Date.UTC(2026, 8, 28, 9, index));
+    await archiveSession({ ...session("/repo", [turn]), updatedAt: at.toISOString() }, env, at);
+  }
+
+  const listed = await listSessions("/repo", env);
+  assert.equal(listed.length, KEEP_ARCHIVES, "pruned on archive");
+  // The one dropped is the oldest.
+  assert.equal(
+    listed.some((summary) => summary.name.endsWith("-0900")),
+    false,
+  );
+
+  // Pruning is idempotent.
+  assert.equal(await pruneArchives("/repo", DEFAULT_SESSION_NAME, KEEP_ARCHIVES, env), 0);
 });

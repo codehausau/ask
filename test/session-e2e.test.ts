@@ -103,7 +103,8 @@ async function runCli(
     child.on("close", (exitCode) => resolve(exitCode ?? -1));
   });
   if (code !== 0) throw new Error(`ask exited ${code}: ${stderr}`);
-  return stdout;
+  // Status lines go to stderr; tests care about both.
+  return `${stdout}${stderr}`;
 }
 
 function userMessages(request: Received): string[] {
@@ -192,7 +193,33 @@ test("piped runs are one-shot: no history read, nothing written", async () => {
   }
 });
 
-test("/new clears the thread", async () => {
+test("/new archives the thread, /reset discards it", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  const base = { cwd, state, url: endpoint.url };
+
+  try {
+    await runCli(["--session", "keep", "@widget.ts first"], base);
+    const archived = await runCli(["/new", "--session", "keep"], base);
+    assert.match(archived, /archived 1 turn\(s\) as keep-\d{8}-\d{4}/);
+    assert.match(archived, /ask \/switch keep-/, "says how to get back");
+
+    // The conversation is still there under its new name.
+    const listing = await runCli(["/sessions"], base);
+    assert.match(listing, /keep-\d{8}-\d{4}\s+1 turn\(s\).*\(archived\)/);
+
+    // /reset, by contrast, throws it away.
+    await runCli(["--session", "gone", "@widget.ts first"], base);
+    const discarded = await runCli(["/reset", "--session", "gone"], base);
+    assert.match(discarded, /discarded 1 turn\(s\)/);
+    const after = await runCli(["/sessions"], base);
+    assert.equal(after.includes("gone-"), false, "nothing archived");
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("/new clears the thread for the next question", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
   const base = { cwd, state, url: endpoint.url };

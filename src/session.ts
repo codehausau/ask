@@ -46,6 +46,9 @@ export interface SessionTurn {
 export interface Session {
   readonly version: number;
   readonly name: string;
+  /** For an archived thread, the name it was filed away from. */
+  readonly archivedFrom?: string;
+  readonly archivedAt?: string;
   /** Absolute directory the session belongs to (git root, or cwd). */
   readonly scope: string;
   readonly createdAt: string;
@@ -427,6 +430,8 @@ export async function resolveSessionName(
 
 export interface SessionSummary {
   readonly name: string;
+  /** Set when this is an archived thread rather than a live one. */
+  readonly archivedFrom?: string;
   readonly turns: number;
   readonly updatedAt: string;
   readonly historyTokens: number;
@@ -461,6 +466,7 @@ export async function listSessions(
       if (!isSession(parsed) || parsed.scope !== scope) continue;
       summaries.push({
         name: parsed.name,
+        ...(parsed.archivedFrom !== undefined ? { archivedFrom: parsed.archivedFrom } : {}),
         turns: parsed.turns.length,
         updatedAt: parsed.updatedAt,
         historyTokens: sessionTokens(parsed),
@@ -473,4 +479,67 @@ export async function listSessions(
 
   // Most recently used first.
   return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Archived threads kept per name before the oldest are removed. */
+export const KEEP_ARCHIVES = 10;
+
+/** Timestamp suffix for an archived thread: 20260928-1032. */
+export function archiveSuffix(now: Date = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return (
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `-${pad(now.getHours())}${pad(now.getMinutes())}`
+  );
+}
+
+/**
+ * File the current thread away under a timestamped name and clear the slot, so
+ * `/new` keeps history instead of destroying it. Returns the archived name, or
+ * null when there was nothing worth keeping.
+ */
+export async function archiveSession(
+  session: Session,
+  env: NodeJS.ProcessEnv = process.env,
+  now: Date = new Date(),
+): Promise<string | null> {
+  if (session.turns.length === 0) return null;
+
+  // A second archive in the same minute gets a counter rather than clobbering.
+  const base = `${session.name}-${archiveSuffix(now)}`;
+  let name = base;
+  for (let attempt = 2; attempt <= 60; attempt += 1) {
+    const taken = await readFile(sessionPath({ scope: session.scope, name, env })).then(
+      () => true,
+      () => false,
+    );
+    if (!taken) break;
+    name = `${base}-${attempt}`;
+  }
+
+  const archived: Session = { ...session, name, archivedFrom: session.name, archivedAt: now.toISOString() };
+  await saveSession(archived, env);
+  await resetSession({ scope: session.scope, name: session.name, env });
+  await pruneArchives(session.scope, session.name, KEEP_ARCHIVES, env);
+  return name;
+}
+
+/** Remove the oldest archives of `name` beyond `keep`. Returns how many went. */
+export async function pruneArchives(
+  scope: string,
+  name: string,
+  keep: number = KEEP_ARCHIVES,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  const archives = (await listSessions(scope, env)).filter(
+    (summary) => summary.archivedFrom === name,
+  );
+  if (archives.length <= keep) return 0;
+
+  // listSessions is newest first, so the tail is what to drop.
+  const doomed = archives.slice(keep);
+  for (const summary of doomed) {
+    await rm(summary.file, { force: true });
+  }
+  return doomed.length;
 }

@@ -57,6 +57,7 @@ import { RefResolutionError, repairSpacedRefs, resolveRef } from "./refs.ts";
 import {
   appendTurn,
   applyCompaction,
+  archiveSession,
   isValidSessionName,
   listSessions,
   resolveSessionName,
@@ -109,8 +110,9 @@ Sessions
   Interactive runs continue the previous conversation for this repository,
   so a follow-up needs no @references. Piped runs are always one-shot.
 
-  ask /new '<prompt>'    start a fresh thread, then ask
-  ask /new               start a fresh thread and stop
+  ask /new '<prompt>'    file the thread away, start fresh, then ask
+  ask /new               file the thread away and start fresh
+  ask /reset             throw the current thread away
   ask /session           show the current thread, no API call
   ask /sessions          list the threads for this repository
   ask /switch <name>     switch to a thread, creating it if new
@@ -157,7 +159,8 @@ Options
       --force               allow --write on a dirty or untracked file
       --all-matches         attach every search match instead of the best one
       --include-secrets     do not skip .env / *.pem / key-ish files
-      --new, --reset        alias of /new
+      --new                 alias of /new
+      --reset               alias of /reset
       --show-session        alias of /session
       --list-sessions       alias of /sessions
       --switch <name>       alias of /switch
@@ -454,16 +457,25 @@ async function printSessions(scope: string, active: string, paint: Palette): Pro
   }
 
   process.stdout.write(`threads for ${paint.bold(path.basename(scope))}\n\n`);
+  // The active thread may be empty and so have no file yet; say so rather than
+  // printing a list with nothing marked active.
+  if (!threads.some((thread) => thread.name === active)) {
+    process.stdout.write(`${paint.cyan("*")} ${active.padEnd(24)} ${paint.dim("empty")}\n`);
+  }
   for (const thread of threads) {
     const marker = thread.name === active ? paint.cyan("*") : " ";
+    const label = thread.archivedFrom === undefined ? "" : paint.dim("  (archived)");
     process.stdout.write(
-      `${marker} ${thread.name.padEnd(20)} ${String(thread.turns).padStart(3)} turn(s)  ` +
+      `${marker} ${thread.name.padEnd(24)} ${String(thread.turns).padStart(3)} turn(s)  ` +
         paint.dim(`~${thread.historyTokens} tokens  ${thread.updatedAt}`) +
-        "\n",
+        `${label}\n`,
     );
   }
   process.stdout.write(
-    paint.dim(`\n* = active. Switch with 'ask /switch <name>'.\n`),
+    paint.dim(
+      `\n* = active. Switch with 'ask /switch <name>'.\n` +
+        `/new files the current thread away, /reset throws it away.\n`,
+    ),
   );
 }
 
@@ -635,6 +647,7 @@ async function main(argv: string[]): Promise<number> {
   const needsScope =
     sessionsOn ||
     bool("new") ||
+    bool("reset") ||
     bool("show-session") ||
     bool("list-sessions") ||
     bool("compact") ||
@@ -664,10 +677,29 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (bool("new")) {
-    const removed = await resetSession(sessionKey);
-    if (!bool("quiet")) {
-      status.note(removed ? "-- started a new thread" : "-- no thread to clear; starting fresh");
+  // /new files the thread away and starts fresh; /reset throws it away.
+  if (bool("new") || bool("reset")) {
+    const current = sessionsDisabled ? null : await loadSession(sessionKey, 0);
+
+    if (bool("reset")) {
+      const removed = await resetSession(sessionKey);
+      if (!bool("quiet")) {
+        status.note(
+          removed && current
+            ? `-- discarded ${current.turns.length} turn(s)`
+            : "-- nothing to discard",
+        );
+      }
+    } else {
+      const archived = current ? await archiveSession(current) : null;
+      if (!bool("quiet")) {
+        status.note(
+          archived
+            ? `-- archived ${current?.turns.length ?? 0} turn(s) as ${archived}; started a new thread`
+            : "-- already a fresh thread",
+        );
+        if (archived) status.note(`--   come back with 'ask /switch ${archived}'`);
+      }
     }
   }
 
@@ -758,11 +790,14 @@ async function main(argv: string[]): Promise<number> {
 
   if (turnRefs.length === 0 && !question && !stdinText) {
     // `ask /new` or `ask /switch x` on their own are complete commands.
-    if (bool("new") || switchTo !== undefined) return 0;
+    if (bool("new") || bool("reset") || switchTo !== undefined) return 0;
     throw new UsageError("nothing to ask: give a prompt, an @path, or pipe stdin");
   }
 
-  const session = sessionsOn && !bool("new") ? await loadSession(sessionKey, sessionTtlMs()) : null;
+  const session =
+    sessionsOn && !bool("new") && !bool("reset")
+      ? await loadSession(sessionKey, sessionTtlMs())
+      : null;
 
   // Files from earlier turns stay attached, re-read from disk so a follow-up
   // after an edit sees current code. Refs that no longer resolve are dropped

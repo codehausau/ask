@@ -540,8 +540,9 @@ $ ask 'now explain the token field logic'
 ```
 
 ```bash
-ask /new '<prompt>'   # start a fresh thread, then ask
-ask /new              # start a fresh thread and stop
+ask /new '<prompt>'   # file the thread away, start fresh, then ask
+ask /new              # file the thread away and start fresh
+ask /reset            # throw the current thread away
 ask /session          # show the current thread, no API call
 ask /sessions         # list this repository's threads
 ask /switch <name>    # switch thread, creating it if new
@@ -551,6 +552,28 @@ ask /create <path> '<prompt>'   # write a new file
 ask /skills [term]              # list or search skills
 ask /compact          # summarise the thread into notes, files stay attached
 ```
+
+### `/new` keeps the old conversation
+
+`/new` does not delete anything. It files the current thread away under a
+timestamped name and starts the slot empty, so threads accumulate:
+
+```console
+$ ask /new
+-- archived 4 turn(s) as default-20260928-1032; started a new thread
+--   come back with 'ask /switch default-20260928-1032'
+
+$ ask /sessions
+threads for takbot
+
+* default                  empty
+  default-20260928-1032      4 turn(s)  ~820 tokens  2026-09-28T10:32:11.402Z  (archived)
+  default-20260927-1655      9 turn(s)  ~2.1k tokens 2026-09-27T16:55:03.881Z  (archived)
+```
+
+`/reset` is the destructive one: it throws the current thread away and keeps
+nothing. The ten most recent archives per name are kept; older ones are removed
+when a new archive is made.
 
 ### Switching threads
 

@@ -50,7 +50,7 @@ export const OPTIONS = {
  */
 export const VERBS: Readonly<Record<string, string>> = {
   "/new": "new",
-  "/reset": "new",
+  "/reset": "reset",
   "/session": "show-session",
   "/sessions": "list-sessions",
   "/compact": "compact",
