@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/src/cli.js",
+    "prepack": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node --test dist/test/*.test.js",
     "test:dev": "node --experimental-strip-types --test test/*.test.ts",
