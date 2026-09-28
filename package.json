@@ -46,6 +46,7 @@
     "lint:workflows": "actionlint .github/workflows/*.yml && zizmor --persona=regular .github/"
   },
   "dependencies": {
+    "marked": "^18.0.14",
     "openai": "^7.23.0"
   },
   "devDependencies": {

@@ -22,7 +22,13 @@ export interface Palette {
   cyan(text: string): string;
 }
 
-const RESET = "\u001b[0m";
+/**
+ * Attribute-specific resets, so nested styling composes: a coloured span inside
+ * a bold heading must end the colour without also ending the bold, which a
+ * blanket \u001b[0m would do.
+ */
+const RESET_INTENSITY = "\u001b[22m"; // ends bold and dim
+const RESET_COLOUR = "\u001b[39m"; // back to the default foreground
 
 /**
  * Whether to emit escape codes for `stream`.
@@ -50,17 +56,17 @@ export function createPalette(enabled: boolean): Palette {
     return { enabled: false, dim: plain, bold: plain, red: plain, yellow: plain, cyan: plain };
   }
   const wrap =
-    (code: string) =>
+    (code: string, reset: string) =>
     (text: string): string =>
-      `${code}${text}${RESET}`;
+      `${code}${text}${reset}`;
 
   return {
     enabled: true,
-    dim: wrap("\u001b[2m"),
-    bold: wrap("\u001b[1m"),
-    red: wrap("\u001b[31m"),
-    yellow: wrap("\u001b[33m"),
-    cyan: wrap("\u001b[36m"),
+    dim: wrap("\u001b[2m", RESET_INTENSITY),
+    bold: wrap("\u001b[1m", RESET_INTENSITY),
+    red: wrap("\u001b[31m", RESET_COLOUR),
+    yellow: wrap("\u001b[33m", RESET_COLOUR),
+    cyan: wrap("\u001b[36m", RESET_COLOUR),
   };
 }
 

@@ -28,7 +28,7 @@ matters should be enforced in code, not policy:
 | Model-driven file access | None — the model only sees paths **you** name with `@` |
 | Writes to your filesystem | Only with `--write`, only to the single file you attached, and only after [checks that fail closed](#editing-a-file). The model is given no tool and cannot choose to write; output otherwise goes to stdout |
 | Network calls | One, to the endpoint you configure |
-| Runtime dependencies | One (`openai`, the official SDK) |
+| Runtime dependencies | Two: `openai` (the official SDK) and `marked` (markdown parsing, itself dependency-free) |
 
 Everything the model receives can be printed before sending: `--dry-run` (exact
 JSON body) or `--show-context` (attachment list + token estimate, no API call).
@@ -319,6 +319,7 @@ file does not exist.
 | `--dry-run` | print the request JSON and exit |
 | `--json` | machine-readable result (text, usage, attachments) |
 | `-q, --quiet` | drop the stderr footer |
+| `--raw` | print the answer exactly as the model wrote it, no rendering |
 | `-V, --version` | print the version |
 
 Exit codes: `0` ok, `1` runtime/API error, `2` usage or configuration error, or
@@ -336,6 +337,37 @@ and CI logs stay clean; the line is erased before the answer prints. `--quiet`,
 `ASK_SPINNER=0`, `TERM=dumb` or any `CI` variable disables it, and
 `ASK_SPINNER=ascii` (also used automatically on a non-UTF-8 locale) swaps braille
 for `-\|/`.
+
+### Rendered answers
+
+On a terminal the answer is rendered rather than dumped: headings bolded, lists
+bulleted, tables aligned, and fenced code framed with shallow syntax
+highlighting for TypeScript/JavaScript, JSON, shell, YAML and XML.
+
+```
+┌─ ts
+  // Newer models reject max_tokens.
+  export function tokenLimitField(baseURL: string | undefined): TokenField {
+    if (!baseURL) return "max_completion_tokens";
+  }
+└─
+```
+
+**Redirected output is never touched.** `ask '…' > out.md` and `ask '…' | jq`
+receive exactly the bytes the model produced — verified by a test that counts
+escape sequences on both paths. `--raw` forces plain output on a terminal too,
+and `--no-color`/`NO_COLOR` disables rendering along with colour.
+
+Two deliberate limits:
+
+- **Highlighting is shallow** — comments, strings, numbers and keywords, matched
+  once per line. Every branch either styles a token or emits it verbatim, so a
+  bug can only mis-colour a word, never mangle code. A test asserts that stripping
+  the escapes from any highlighted sample returns the input exactly.
+- **Two dependencies, not thirty.** `marked` parses the markdown (it has no
+  dependencies of its own) and the ANSI renderer here is ~200 lines.
+  `marked-terminal` would look better and pull in `highlight.js`, `yargs` and
+  `parse5` behind it; that trade costs the claim at the top of this README.
 
 ### Colour
 
@@ -745,6 +777,8 @@ dropped silently. The footer prints the real token usage returned by the API.
 ## Layout and development
 
 ```
+src/render.ts         markdown → ANSI for a terminal, over marked's tokens
+src/highlight.ts      shallow, lossless code highlighting
 src/skills.ts         SKILL.md discovery, selection and injection
 src/refs.ts           @ref → paths: exact path, glob, or ranked search
 src/skip.ts           skip rules shared by attachment and search

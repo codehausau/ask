@@ -25,6 +25,7 @@ import {
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour.ts";
+import { renderMarkdown } from "./render.ts";
 import { gitDiffNoIndex, gitFileState } from "./git.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
@@ -178,6 +179,7 @@ Options
   -h, --help                this help
       --install-completion  print the shell setup block (--apply writes it)
       --no-color            no colour in status output (also NO_COLOR=1)
+      --raw                 print the answer exactly as the model wrote it
 `;
 
 class UsageError extends Error {}
@@ -1147,7 +1149,20 @@ async function main(argv: string[]): Promise<number> {
   }
 
   // In write mode the answer is the file itself; it is on disk, not stdout.
-  if (writeSummary === null) process.stdout.write(`${result.text}\n`);
+  if (writeSummary === null) {
+    // Markdown is rendered only for a terminal: redirected output must stay
+    // byte-identical to what the model wrote.
+    const answerPalette =
+      bool("raw") || bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout));
+    // A pty can report 0 columns, which is not nullish, so ?? is not enough.
+    const columns = process.stdout.columns;
+    const width = typeof columns === "number" && columns >= 40 ? columns : 80;
+    process.stdout.write(
+      answerPalette.enabled
+        ? renderMarkdown(result.text, { palette: answerPalette, width })
+        : `${result.text}\n`,
+    );
+  }
 
   // An edit instruction with one file attached, but no /write: say how to apply
   // it. Suggesting is the whole of it — inferring the intent and writing would

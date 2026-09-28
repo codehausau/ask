@@ -30,14 +30,23 @@ test("FORCE_COLOR enables colour for a pipe, and 0 disables it", () => {
   assert.equal(supportsColour(TTY, { ...TERM, FORCE_COLOR: "" }), false);
 });
 
-test("an enabled palette wraps and resets", () => {
+test("an enabled palette uses attribute-specific resets", () => {
   const palette = createPalette(true);
   assert.equal(palette.enabled, true);
-  assert.equal(palette.dim("status"), "\u001b[2mstatus\u001b[0m");
-  assert.equal(palette.red("boom"), "\u001b[31mboom\u001b[0m");
-  assert.equal(palette.yellow("careful"), "\u001b[33mcareful\u001b[0m");
-  assert.equal(palette.bold("title"), "\u001b[1mtitle\u001b[0m");
-  assert.equal(palette.cyan("label"), "\u001b[36mlabel\u001b[0m");
+  // 22 ends bold/dim, 39 restores the default foreground — a blanket 0 would
+  // end everything, so nested styling would lose the outer attribute.
+  assert.equal(palette.dim("status"), "\u001b[2mstatus\u001b[22m");
+  assert.equal(palette.bold("title"), "\u001b[1mtitle\u001b[22m");
+  assert.equal(palette.red("boom"), "\u001b[31mboom\u001b[39m");
+  assert.equal(palette.yellow("careful"), "\u001b[33mcareful\u001b[39m");
+  assert.equal(palette.cyan("label"), "\u001b[36mlabel\u001b[39m");
+});
+
+test("a colour nested in bold leaves the bold intact", () => {
+  const palette = createPalette(true);
+  const heading = palette.bold(`Review of ${palette.yellow("chat.ts")} now`);
+  // The inner span ends with 39, not 0, so "now" is still bold.
+  assert.equal(heading, "\u001b[1mReview of \u001b[33mchat.ts\u001b[39m now\u001b[22m");
 });
 
 test("a disabled palette is the identity, so callers never branch", () => {

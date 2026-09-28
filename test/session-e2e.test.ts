@@ -525,3 +525,43 @@ test("an expired thread starts fresh", async () => {
     await endpoint.close();
   }
 });
+
+test("a redirected answer is byte-identical to what the model wrote", async () => {
+  const markdown = "## Heading\n\n- **bold** item\n- `code` item\n\n```ts\nconst a = 1;\n```\n";
+  const server: Server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as Received;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: parsed.model,
+          choices: [
+            { index: 0, message: { role: "assistant", content: markdown }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no port");
+  const url = `http://127.0.0.1:${address.port}/v1`;
+
+  const { cwd, state } = await workspace();
+  try {
+    // stdout is a pipe here, so rendering must be skipped entirely: no escape
+    // sequences, and the markdown source preserved exactly.
+    const out = await runCli(["what is markdown"], { cwd, state, url });
+    const stdoutOnly = out.slice(0, out.indexOf("\n-- ") === -1 ? undefined : out.indexOf("\n-- "));
+
+    assert.equal(stdoutOnly.includes("\u001b["), false, "no ANSI when piped");
+    assert.ok(stdoutOnly.includes("## Heading"), "markup preserved");
+    assert.ok(stdoutOnly.includes("- **bold** item"));
+    assert.ok(stdoutOnly.includes("```ts"));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

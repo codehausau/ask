@@ -22,6 +22,7 @@ export const OPTIONS = {
   "install-completion": { type: "boolean" },
   apply: { type: "boolean" },
   "no-color": { type: "boolean" },
+  raw: { type: "boolean" },
   switch: { type: "string" },
   "list-sessions": { type: "boolean" },
   write: { type: "string" },

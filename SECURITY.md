@@ -117,7 +117,10 @@ gitignored. The key is only ever sent to the configured endpoint as an
 
 ## Supply chain
 
-- One runtime dependency (`openai`), pinned by `pnpm-lock.yaml`.
+- Two runtime dependencies, pinned by `pnpm-lock.yaml`: `openai` (the official
+  SDK) and `marked` (markdown parsing for terminal rendering, itself
+  dependency-free). Neither has transitive dependencies, so the whole tree is
+  three packages and readable.
 - All GitHub Actions are pinned to commit SHAs, with Dependabot keeping them
   current.
 - CI runs `pnpm audit`, Trivy (vulns, secrets, misconfig), TruffleHog over full

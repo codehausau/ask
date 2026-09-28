@@ -28,7 +28,7 @@ _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --create \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
 --list-sessions --list-skills --max-total-bytes --model --new --no-color \
 --no-session \
---quiet --reset \
+--quiet --raw --reset \
 --session \
 --force --session-max-tokens --show-context --show-session --skill --switch \
 --system --write \
