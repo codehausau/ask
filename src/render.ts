@@ -27,15 +27,97 @@ export function renderMarkdown(text: string, options: RenderOptions): string {
 
   let tokens: Token[];
   try {
-    tokens = marked.lexer(text);
+    tokens = marked.lexer(normaliseNestedFences(dropEmptyFences(text)));
   } catch {
     // A parse failure must never lose the answer.
     return text;
   }
 
   const width = options.width ?? 80;
-  const rendered = renderTokens(tokens, options.palette, width, 0).trimEnd();
-  return `${rendered}\n`;
+  const rendered = renderTokens(tokens, options.palette, width, 0);
+  // Blocks each end with their own blank line, which doubles up between them.
+  return `${tidyBlankLines(rendered)}\n`;
+}
+
+/**
+ * Remove fenced blocks that contain nothing.
+ *
+ * Models sometimes trail a stray empty fence pair after an answer. Left in, it
+ * renders as an empty frame, and worse, it confuses the nested-fence repair
+ * below, which takes the *last* fence as the closing one.
+ */
+export function dropEmptyFences(text: string): string {
+  const lines = text.split("\n");
+  const isFence = (line: string): boolean => /^\s*```/.test(line);
+  const keep: boolean[] = lines.map(() => true);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isFence(lines[index] ?? "")) continue;
+
+    // Look ahead past blank lines for an immediate closing fence.
+    let next = index + 1;
+    while (next < lines.length && (lines[next] ?? "").trim().length === 0) next += 1;
+    if (next >= lines.length || !isFence(lines[next] ?? "")) continue;
+
+    // A fence closed by a fence with only blank lines between: an empty block.
+    for (let blank = index; blank <= next; blank += 1) keep[blank] = false;
+    index = next;
+  }
+
+  return lines.filter((_line, index) => keep[index]).join("\n");
+}
+
+/**
+ * Repair a document-in-a-fence.
+ *
+ * Asked for "an example README", a model often wraps the whole file in a
+ * markdown fence — and if the file itself contains fences, CommonMark ends the
+ * outer block at the first inner one, spilling the rest of the document out as
+ * though it were the answer's own markdown.
+ *
+ * Widening the outer fence to four backticks expresses what was meant. The guard
+ * is tight: exactly one markdown-tagged fence, and at least one fence inside it.
+ * Without inner fences the last fence *is* the closing one, so the rewrite would
+ * be a no-op and is skipped.
+ */
+export function normaliseNestedFences(text: string): string {
+  const lines = text.split("\n");
+  const isMarkdownFence = (line: string): boolean => /^\s*```(?:markdown|md)\s*$/i.test(line);
+  const isFence = (line: string): boolean => /^\s*```/.test(line);
+
+  if (lines.filter(isMarkdownFence).length !== 1) return text;
+
+  const open = lines.findIndex(isMarkdownFence);
+  let close = -1;
+  for (let index = lines.length - 1; index > open; index -= 1) {
+    if (isFence(lines[index] ?? "")) {
+      close = index;
+      break;
+    }
+  }
+  if (close === -1) return text;
+
+  const inner = lines.slice(open + 1, close).filter((line) => isFence(line)).length;
+  if (inner === 0) return text;
+
+  lines[open] = (lines[open] ?? "").replace("```", "````");
+  lines[close] = (lines[close] ?? "").replace("```", "````");
+  return lines.join("\n");
+}
+
+/** At most one blank line between blocks, none at either end. */
+export function tidyBlankLines(text: string): string {
+  return text
+    .split("\n")
+    .reduce<string[]>((lines, line) => {
+      const blank = line.trim().length === 0;
+      const previousBlank = lines.length > 0 && (lines[lines.length - 1] ?? "").trim().length === 0;
+      if (blank && (previousBlank || lines.length === 0)) return lines;
+      lines.push(blank ? "" : line);
+      return lines;
+    }, [])
+    .join("\n")
+    .trimEnd();
 }
 
 function renderTokens(tokens: readonly Token[], paint: Palette, width: number, depth: number): string {
@@ -55,13 +137,17 @@ function renderTokens(tokens: readonly Token[], paint: Palette, width: number, d
       }
       case "code": {
         const code = token as Tokens.Code;
+        // An empty fence is noise: a frame around nothing tells you nothing.
+        if (code.text.trim().length === 0) break;
+
         const language = detectLanguage(code.lang);
-        const label = code.lang ? paint.dim(`${code.lang}`) : paint.dim("code");
         const body = highlight(code.text, language, paint)
           .split("\n")
           .map((line) => `  ${line}`)
           .join("\n");
-        out += `${paint.dim("┌─ ")}${label}\n${body}\n${paint.dim("└─")}\n\n`;
+        // No label for an unlabelled fence: the frame already says "code".
+        const header = code.lang ? `${paint.dim("┌─ ")}${paint.dim(code.lang)}` : paint.dim("┌─");
+        out += `${header}\n${body}\n${paint.dim("└─")}\n\n`;
         break;
       }
       case "blockquote": {

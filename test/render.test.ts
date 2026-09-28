@@ -3,7 +3,13 @@ import test from "node:test";
 
 import { createPalette, NO_COLOUR } from "../src/colour.ts";
 import { detectLanguage, highlight } from "../src/highlight.ts";
-import { renderMarkdown, visibleLength } from "../src/render.ts";
+import {
+  dropEmptyFences,
+  normaliseNestedFences,
+  renderMarkdown,
+  tidyBlankLines,
+  visibleLength,
+} from "../src/render.ts";
 
 const paint = createPalette(true);
 
@@ -151,4 +157,88 @@ test("markdown the renderer does not understand is still shown", () => {
   assert.match(out, /Text/);
   assert.match(out, /html/);
   assert.match(out, /More/);
+});
+
+test("an empty fence is dropped rather than framed", () => {
+  // Reported: an answer ended with a stray empty fence, rendering as a frame
+  // around nothing.
+  const out = plain(renderMarkdown("Answer.\n\n```\n```\n", { palette: paint }));
+  assert.equal(out.includes("┌─"), false, "no frame around nothing");
+  assert.match(out, /Answer\./);
+
+  assert.equal(dropEmptyFences("a\n\n```\n```\n").includes("```"), false);
+  assert.equal(dropEmptyFences("a\n```\n\n\n```\nb").includes("```"), false, "blank-only body");
+  // A block with content is untouched.
+  assert.match(dropEmptyFences("```ts\nconst a = 1;\n```"), /const a = 1;/);
+  assert.match(dropEmptyFences("```ts\nconst a = 1;\n```"), /```/);
+});
+
+test("an unlabelled fence gets no invented label", () => {
+  const labelled = plain(renderMarkdown("```ts\nconst a = 1;\n```\n", { palette: paint }));
+  assert.match(labelled, /┌─ ts/);
+
+  const bare = plain(renderMarkdown("```\nplain text\n```\n", { palette: paint }));
+  assert.match(bare, /┌─\n/, "frame only");
+  assert.equal(bare.includes("┌─ code"), false, "no made-up language");
+  assert.equal(bare.includes("┌─ text"), false);
+});
+
+test("blocks are separated by exactly one blank line", () => {
+  const out = plain(
+    renderMarkdown("## One\n\ntext\n\n```ts\na\n```\n\n## Two\n\nmore\n", { palette: paint }),
+  );
+  assert.equal(/\n\n\n/.test(out), false, `doubled blank lines in:\n${out}`);
+  assert.equal(tidyBlankLines("a\n\n\n\nb"), "a\n\nb");
+  assert.equal(tidyBlankLines("\n\na\n\n"), "a");
+});
+
+test("a document wrapped in a markdown fence survives its own fences", () => {
+  // The reported case: a README inside ```markdown, containing ```sh — CommonMark
+  // ends the outer block at the inner fence, spilling the rest of the document.
+  const answer = [
+    "Here is an example:",
+    "",
+    "```markdown",
+    "# Title",
+    "",
+    "## Install",
+    "",
+    "```sh",
+    "npm i",
+    "```",
+    "",
+    "## License",
+    "",
+    "MIT",
+    "```",
+    "",
+  ].join("\n");
+
+  const out = plain(renderMarkdown(answer, { palette: paint }));
+  const frames = (out.match(/┌─/g) ?? []).length;
+  assert.equal(frames, 1, `the document should be one block, got ${frames}`);
+  // Everything after the inner fence stayed inside, indented as block content.
+  assert.match(out, /^ {2}## License$/m);
+  assert.match(out, /^ {2}MIT$/m);
+});
+
+test("the nested-fence repair only fires when it is needed", () => {
+  // No inner fences: the last fence is the closing one, so nothing to do.
+  const simple = "```markdown\n# Title\n```";
+  assert.equal(normaliseNestedFences(simple), simple);
+
+  // Two markdown fences: ambiguous, so leave well alone rather than swallow
+  // everything between them.
+  const two = "```markdown\n# A\n\n```sh\nx\n```\n```\n\n```markdown\n# B\n```";
+  assert.equal(normaliseNestedFences(two), two);
+
+  // No markdown fence at all.
+  const code = "```ts\nconst a = 1;\n```";
+  assert.equal(normaliseNestedFences(code), code);
+
+  // The case it exists for gains a four-backtick fence.
+  const nested = "```markdown\n# A\n\n```sh\nx\n```\n\nend\n```";
+  const fixed = normaliseNestedFences(nested);
+  assert.match(fixed, /^````markdown$/m);
+  assert.match(fixed, /^````$/m);
 });

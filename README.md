@@ -358,6 +358,13 @@ receive exactly the bytes the model produced — verified by a test that counts
 escape sequences on both paths. `--raw` forces plain output on a terminal too,
 and `--no-color`/`NO_COLOR` disables rendering along with colour.
 
+Two rough edges in model output are smoothed over first: a stray empty fence is
+dropped rather than framed, and a document wrapped in a ` ```markdown ` fence that
+contains its own fences gets the outer fence widened to four backticks — otherwise
+CommonMark ends the block at the first inner fence and the rest of the document
+spills out as though it were the answer's own prose. That repair only fires when
+there is exactly one markdown-tagged fence with fences inside it.
+
 Two deliberate limits:
 
 - **Highlighting is shallow** — comments, strings, numbers and keywords, matched
