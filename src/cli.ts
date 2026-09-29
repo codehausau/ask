@@ -7,7 +7,7 @@
 //
 // No tools, no agent loop, no follow-up turns: exactly one HTTP request.
 
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -1099,7 +1099,11 @@ async function main(argv: string[]): Promise<number> {
 
     // Preview mode: show the diff, touch nothing.
     if (diffOnly) {
-      const temporary = path.join(tmpdir(), `ask-proposed-${process.pid}-${path.basename(targetFile)}`);
+      // A private directory, not a predictable name in the shared temp dir:
+      // another user could otherwise pre-create that path as a symlink and have
+      // this write follow it.
+      const scratch = await mkdtemp(path.join(tmpdir(), "ask-diff-"));
+      const temporary = path.join(scratch, path.basename(targetFile));
       await writeFile(temporary, proposed);
       try {
         const diff = await gitDiffNoIndex(absolute, temporary, colour.enabled);
@@ -1109,7 +1113,7 @@ async function main(argv: string[]): Promise<number> {
               `(git unavailable, so no diff)\n`,
         );
       } finally {
-        await rm(temporary, { force: true });
+        await rm(scratch, { recursive: true, force: true });
       }
       status.note(`-- nothing written; drop --diff to apply`);
       return 0;

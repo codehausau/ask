@@ -30,18 +30,18 @@ test("path candidates are found in the shapes answers actually use", () => {
 });
 
 test("things that look like paths but are not are ignored", () => {
-  const found = extractPathCandidates(
-    "Visit https://example.com/docs/x.html or http://a.b/c.ts — version 1.2.3 — and 4.5.",
+  // Asserting the whole result, rather than probing it for substrings: a URL
+  // must contribute nothing at all, and neither must a bare version number.
+  assert.deepEqual(
+    extractPathCandidates(
+      "Visit https://example.com/docs/x.html or http://a.b/c.ts — version 1.2.3 — and 4.5.",
+    ),
+    [],
   );
-  assert.equal(
-    found.some((candidate) => candidate.includes("example.com")),
-    false,
-    "a URL is not a path",
-  );
-  assert.equal(
-    found.some((candidate) => /^[\d.]+$/.test(candidate)),
-    false,
-    "a version number is not a path",
+  // A real path alongside a URL still comes through.
+  assert.deepEqual(
+    extractPathCandidates("See src/refs.ts, not https://example.com/src/refs.ts"),
+    ["src/refs.ts"],
   );
 });
 

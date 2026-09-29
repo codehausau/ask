@@ -155,15 +155,15 @@ test("free-text words and free-form flag values are left alone", async () => {
 
 test("the fzf picker is opt-out, and needs both fzf and a terminal", async () => {
   const cwd = await fixture();
-  const probe = `source ${COMPLETION}; _ask_use_fzf; echo "rc=$?"`;
+  const probe = 'source "$1"; _ask_use_fzf; echo "rc=$?"';
 
   // No terminal attached (stderr is a pipe here), so never interactive: this is
   // what keeps the rest of this suite on the plain-completion path.
-  const piped = await run("bash", ["-c", probe], { cwd });
+  const piped = await run("bash", ["-c", probe, "_", COMPLETION], { cwd });
   assert.equal(piped.stdout.trim(), "rc=1");
 
   // Explicit opt-out is honoured regardless.
-  const optOut = await run("bash", ["-c", probe], {
+  const optOut = await run("bash", ["-c", probe, "_", COMPLETION], {
     cwd,
     env: { ...process.env, ASK_FZF: "0" },
   });
@@ -174,7 +174,7 @@ test("the picker and the plain fallback draw from the same candidate list", asyn
   const cwd = await fixture();
   const { stdout } = await run(
     "bash",
-    ["-c", `source ${COMPLETION}; _ask_search_paths buried`],
+    ["-c", 'source "$1"; _ask_search_paths buried', "_", COMPLETION],
     { cwd },
   );
   assert.deepEqual(
@@ -193,14 +193,14 @@ async function atWidget(
   point: number,
 ): Promise<{ line: string; point: number }> {
   const script = [
-    `source ${COMPLETION}`,
+    'source "$1"',
     `READLINE_LINE=${JSON.stringify(line)}`,
     `READLINE_POINT=${point}`,
     "_ask_at_widget",
     'printf "%s\\n%s\\n" "$READLINE_LINE" "$READLINE_POINT"',
   ].join("; ");
 
-  const { stdout } = await run("bash", ["-c", script], {
+  const { stdout } = await run("bash", ["-c", script, "_", COMPLETION], {
     cwd,
     env: { ...process.env, ASK_FZF: "0" },
   });
@@ -241,7 +241,7 @@ test("the @ binding is opt-in", async () => {
   // sourcing the file cannot silently rebind @ for the whole shell.
   const { stdout } = await run(
     "bash",
-    ["-c", `source ${COMPLETION}; bind -X 2>/dev/null | grep -c '"@"' || true`],
+    ["-c", 'source "$1"; bind -X 2>/dev/null | grep -c \'"@"\' || true', "_", COMPLETION],
     { cwd },
   );
   assert.equal(stdout.trim(), "0");
@@ -253,7 +253,9 @@ test("TAB accepts in the single-select pickers, but toggles in askf", async () =
     "bash",
     [
       "-c",
-      `source ${COMPLETION}; echo "single=\${_ASK_FZF_SINGLE[*]}"; echo "common=\${_ASK_FZF_COMMON[*]}"`,
+      'source "$1"; echo "single=${_ASK_FZF_SINGLE[*]}"; echo "common=${_ASK_FZF_COMMON[*]}"',
+      "_",
+      COMPLETION,
     ],
     { cwd },
   );
