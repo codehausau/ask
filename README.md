@@ -105,8 +105,9 @@ What `@<TAB>` does depends on whether [fzf](https://github.com/junegunn/fzf) is
 installed (`apt-get install fzf`, `brew install fzf`):
 
 **With fzf** — an interactive picker: a highlighted list you move through with
-the arrow keys, keep typing to filter, ENTER to insert, ESC to cancel. Closest
-thing to an editor's `@` mention.
+the arrow keys, keep typing to filter, **TAB or ENTER** to insert, ESC to cancel.
+Closest thing to an editor's `@` mention. (`askf` keeps TAB for multi-select,
+since choosing several files is the whole point of it.)
 
 ```console
 $ ask @t<TAB>

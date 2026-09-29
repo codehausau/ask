@@ -6,7 +6,7 @@
 #
 #   with fzf     an interactive picker opens: a highlighted list you move
 #                through with the arrow keys (or keep typing to filter),
-#                ENTER inserts the highlighted path, ESC cancels.
+#                TAB or ENTER inserts the highlighted path, ESC cancels.
 #   without fzf  plain bash completion: one match completes, several list.
 #                Add `bind 'TAB: menu-complete'` to cycle through them.
 #
@@ -71,6 +71,15 @@ _ask_search_paths() {
   _ask_all_paths | grep -iF -- "$needle" | head -n "$_ASK_SEARCH_LIMIT"
 }
 
+# Shared fzf options.
+#
+# TAB accepts in the single-select pickers, so it finishes the completion and
+# closes the menu exactly as ENTER does — that is what a shell user's fingers
+# expect. `askf` deliberately does not include it: there TAB is how you select
+# more than one file, which is the whole point of that helper.
+_ASK_FZF_COMMON=(--height=40% --reverse --border --info=inline)
+_ASK_FZF_SINGLE=("${_ASK_FZF_COMMON[@]}" --bind=tab:accept)
+
 # True when an interactive fzf picker should be used. Requires fzf, a terminal
 # to draw on, and no explicit opt-out — the terminal check also keeps the test
 # harness (which captures output through a pipe) on the plain path.
@@ -84,15 +93,11 @@ _ask_pick() {
   local query=$1 prefix=$2 chosen
 
   chosen=$(
-    _ask_all_paths | fzf \
-      --height=40% \
-      --reverse \
+    _ask_all_paths | fzf "${_ASK_FZF_SINGLE[@]}" \
       --query="$query" \
       --select-1 \
       --exit-0 \
-      --prompt="ask ${prefix} " \
-      --info=inline \
-      --border 2> /dev/tty
+      --prompt="ask ${prefix} " 2> /dev/tty
   ) || return 1
 
   [ -n "$chosen" ] || return 1
@@ -261,8 +266,7 @@ _ask_at_widget() {
   fi
 
   chosen=$(
-    _ask_all_paths | fzf --height=40% --reverse --border \
-      --prompt='ask @ ' --info=inline 2> /dev/tty
+    _ask_all_paths | fzf "${_ASK_FZF_SINGLE[@]}" --prompt='ask @ ' 2> /dev/tty
   ) || chosen=""
 
   if [ -n "$chosen" ]; then
@@ -288,8 +292,8 @@ if command -v fzf > /dev/null 2>&1; then
     local item
 
     mapfile -t picked < <(
-      _ask_all_paths | fzf --multi --height=40% --reverse --border \
-        --prompt='ask @ ' --info=inline
+      # No tab:accept here: TAB toggles selection, which is why askf exists.
+      _ask_all_paths | fzf "${_ASK_FZF_COMMON[@]}" --multi --prompt='ask @ '
     )
     if [ ${#picked[@]} -eq 0 ]; then
       return 1

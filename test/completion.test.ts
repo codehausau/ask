@@ -247,6 +247,28 @@ test("the @ binding is opt-in", async () => {
   assert.equal(stdout.trim(), "0");
 });
 
+test("TAB accepts in the single-select pickers, but toggles in askf", async () => {
+  const cwd = await fixture();
+  const { stdout } = await run(
+    "bash",
+    [
+      "-c",
+      `source ${COMPLETION}; echo "single=\${_ASK_FZF_SINGLE[*]}"; echo "common=\${_ASK_FZF_COMMON[*]}"`,
+    ],
+    { cwd },
+  );
+
+  // TAB finishing the completion is what a shell user's fingers expect...
+  assert.match(stdout, /single=.*--bind=tab:accept/);
+  // ...but in askf TAB is how you select more than one file.
+  assert.doesNotMatch(stdout, /common=.*--bind=tab:accept/);
+
+  const script = await readFile(COMPLETION, "utf8");
+  const askf = script.slice(script.indexOf("askf()"));
+  assert.ok(askf.includes("_ASK_FZF_COMMON"), "askf uses the common options");
+  assert.equal(askf.includes("_ASK_FZF_SINGLE"), false, "askf must keep TAB for toggling");
+});
+
 test("the completion script lists exactly the flags the CLI accepts", async () => {
   const script = await readFile(COMPLETION, "utf8");
   const match = /^_ASK_FLAGS="([\s\S]*?)"$/m.exec(script);
