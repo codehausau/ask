@@ -11,9 +11,24 @@ import type {
 } from "openai/resources/chat/completions";
 
 export const DEFAULT_MODEL = "gpt-4o-mini";
+/**
+ * The model is told its own situation, because not knowing it produces useless
+ * answers: "let me check refs.ts" or a clarifying question, neither of which can
+ * be acted on when there is no turn the model controls.
+ *
+ * Asking it to name paths plainly also feeds the next-command suggestions, which
+ * look for files the answer mentioned but that were never attached.
+ */
 export const DEFAULT_SYSTEM =
-  "You are a precise senior engineer. Answer directly, no preamble. " +
-  "Cite file paths and line context when you reference the supplied files.";
+  "You are a precise senior engineer answering in a single shot. You cannot run " +
+  "commands, read files you were not given, or ask a question and receive an " +
+  "answer: there is no further turn under your control. " +
+  "Answer directly, with no preamble. Cite file paths and line context for the " +
+  "files you were given. " +
+  "If the answer depends on a file you cannot see, name its path plainly so it " +
+  "can be attached and the question asked again. " +
+  "If something is genuinely ambiguous, state the assumption you are proceeding " +
+  "on rather than asking a question.";
 
 /** The only fields this tool is allowed to send. */
 export type OneShotRequest = Omit<

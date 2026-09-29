@@ -321,6 +321,7 @@ file does not exist.
 | `--json` | machine-readable result (text, usage, attachments) |
 | `-q, --quiet` | drop the stderr footer |
 | `--raw` | print the answer exactly as the model wrote it, no rendering |
+| `--no-next` | do not suggest a follow-up command (also `ASK_NEXT=0`) |
 | `-V, --version` | print the version |
 
 Exit codes: `0` ok, `1` runtime/API error, `2` usage or configuration error, or
@@ -401,6 +402,38 @@ for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
 `--token-field` if your gateway disagrees.
 
 ## Editing a file
+
+### Suggested next command
+
+Because a one-shot tool cannot take the next step itself, **you** are the loop —
+so it tells you what the next command would be:
+
+```console
+$ ask '@src/chat.ts why does tokenLimitField swallow a malformed URL?'
+...the answer, which happens to mention src/refs.ts...
+
+-- next: ask '@src/chat.ts @src/refs.ts why does tokenLimitField swallow a malformed URL?'
+--       (src/refs.ts was mentioned but not attached)
+```
+
+The suggestions are computed here, not asked of the model, so they cost no tokens
+and cannot be invented: a path is only offered if it **exists on disk**, and the
+flags come from this CLI rather than a model's memory of it.
+
+| When | Suggested |
+| --- | --- |
+| the answer names a file that exists but was not attached | re-ask with it attached |
+| the answer hit the token cap | `--max-tokens` at double what it used |
+| an attached file was truncated by the caps | `--max-file-bytes 524288` |
+| an edit was asked for, answered with exactly one code block, and not applied | `ask /write <file> '<question>'` |
+| the thread's history passes ~8k tokens | `ask /compact` |
+
+At most two are shown, on stderr, and `--no-next` or `ASK_NEXT=0` turns them off.
+
+What this deliberately cannot do is suggest *intent*. It knows `src/refs.ts` was
+mentioned; it has no idea why. A model could say "check whether `globToRegExp` has
+the same unguarded catch", but that costs tokens on every request and would need
+validating against the filesystem anyway — which is what these rules already do.
 
 **`@` attaches, it does not edit.** `ask '@test.ts add another function'` answers
 in the terminal and leaves the file alone — so when the request reads like an
@@ -785,6 +818,7 @@ dropped silently. The footer prints the real token usage returned by the API.
 ## Layout and development
 
 ```
+src/next.ts           deterministic "what to run next" suggestions
 src/render.ts         markdown → ANSI for a terminal, over marked's tokens
 src/highlight.ts      shallow, lossless code highlighting
 src/skills.ts         SKILL.md discovery, selection and injection

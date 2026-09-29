@@ -25,6 +25,7 @@ import {
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour.ts";
+import { extractPathCandidates, suggestNext, type Suggestion } from "./next.ts";
 import { renderMarkdown } from "./render.ts";
 import { gitDiffNoIndex, gitFileState } from "./git.ts";
 import { applyEnvFiles, describeEnvFiles } from "./env.ts";
@@ -47,7 +48,6 @@ import {
   checkWriteTargetContext,
   checkWriteTargetPath,
   looksLikeEdit,
-  shellQuote,
   checkWriteResponse,
   stripCodeFence,
   summariseChange,
@@ -180,6 +180,7 @@ Options
       --install-completion  print the shell setup block (--apply writes it)
       --no-color            no colour in status output (also NO_COLOR=1)
       --raw                 print the answer exactly as the model wrote it
+      --no-next             do not suggest a follow-up command
 `;
 
 class UsageError extends Error {}
@@ -527,6 +528,48 @@ async function gatherSkills(terms: readonly string[]): Promise<LoadedSkill[]> {
     loaded.push(await loadSkill(summary, summary.name === term ? "name" : "search"));
   }
   return loaded;
+}
+
+/** At most this many suggestions: more than two is noise after every answer. */
+const MAX_SUGGESTIONS = 2;
+
+function printSuggestions(
+  suggestions: readonly Suggestion[],
+  status: { note: (line: string) => void },
+): void {
+  for (const suggestion of suggestions.slice(0, MAX_SUGGESTIONS)) {
+    status.note(`-- next: ${suggestion.command}`);
+    status.note(`--       (${suggestion.why})`);
+  }
+}
+
+/**
+ * Paths the answer named that exist on disk but were not attached. Existence is
+ * the whole guard: a hallucinated filename simply never appears.
+ */
+async function mentionedButMissing(
+  answer: string,
+  attached: readonly string[],
+  cwd: string = process.cwd(),
+): Promise<string[]> {
+  const already = new Set(attached);
+  const found: string[] = [];
+
+  for (const candidate of extractPathCandidates(answer)) {
+    if (found.length >= 3) break;
+    if (already.has(candidate)) continue;
+
+    const absolute = path.resolve(cwd, candidate);
+    // Only files inside the working tree, and only real ones.
+    if (!absolute.startsWith(path.resolve(cwd))) continue;
+    const info = await stat(absolute).catch(() => null);
+    if (!info?.isFile()) continue;
+
+    found.push(candidate);
+    already.add(candidate);
+  }
+
+  return found;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -1164,16 +1207,25 @@ async function main(argv: string[]): Promise<number> {
     );
   }
 
-  // An edit instruction with one file attached, but no /write: say how to apply
-  // it. Suggesting is the whole of it — inferring the intent and writing would
-  // undo the point of naming the target.
-  if (writeSummary === null && !bool("quiet") && !bool("json")) {
-    const only = context.blocks.length === 1 ? context.blocks[0]?.path : undefined;
-    if (only !== undefined && looksLikeEdit(question)) {
-      status.note("-- nothing was written. To apply an answer like this to the file:");
-      status.note(`--   ask /write ${shellQuote(only)} ${shellQuote(question)}`);
-      status.note("--   ask /diff  ... to preview it first");
-    }
+  // What to do next. Computed here rather than asked of the model: every
+  // suggestion is checked against the filesystem, so it can be unhelpful but
+  // never wrong.
+  if (!bool("quiet") && !bool("json") && !bool("no-next") && process.env["ASK_NEXT"] !== "0") {
+    const attached = context.blocks.map((block) => block.path);
+    const mentioned = await mentionedButMissing(result.text, attached);
+    const suggestions = suggestNext({
+      question,
+      answer: result.text,
+      attached,
+      mentioned,
+      hitTokenCap: result.finishReason === "length",
+      contextTruncated: context.truncated,
+      sessionTokens: sessionTokens(saved),
+      wrote: writeSummary !== null,
+      editRequested: looksLikeEdit(question),
+      outputTokens: result.usage.output,
+    });
+    printSuggestions(suggestions, status);
   }
 
   if (!bool("quiet")) {

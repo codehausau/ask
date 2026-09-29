@@ -27,6 +27,7 @@ _ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --create \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
 --list-sessions --list-skills --max-total-bytes --model --new --no-color \
+--no-next \
 --no-session \
 --quiet --raw --reset \
 --session \

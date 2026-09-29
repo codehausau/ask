@@ -23,6 +23,7 @@ export const OPTIONS = {
   apply: { type: "boolean" },
   "no-color": { type: "boolean" },
   raw: { type: "boolean" },
+  "no-next": { type: "boolean" },
   switch: { type: "string" },
   "list-sessions": { type: "boolean" },
   write: { type: "string" },
