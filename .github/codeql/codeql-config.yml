@@ -1,0 +1,13 @@
+name: ask
+
+# Analyse the shipped tool, not its tests.
+#
+# The six alerts this excludes are all "shell command built from environment
+# values" in test/completion.test.ts, which drives the bash completion script on
+# purpose. The path it passes comes from import.meta.url — this repository's own
+# location — so there is no untrusted input, and the tests cannot invoke bash
+# without it. Excluding test code from dataflow-to-shell queries is the
+# conventional trade; src/ is still analysed in full, including the code that
+# actually runs git and writes files.
+paths-ignore:
+  - test/**

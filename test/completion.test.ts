@@ -16,6 +16,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const COMPLETION = path.join(REPO_ROOT, "completions", "ask.bash");
 const HARNESS = path.join(REPO_ROOT, "test", "completion-harness.sh");
 
+/** The copy inside each fixture, referenced by this constant relative path. */
+
 async function fixture(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ask-comp-"));
   await mkdir(path.join(root, "src", "deep"), { recursive: true });
