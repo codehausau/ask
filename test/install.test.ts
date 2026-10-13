@@ -20,7 +20,7 @@ test("the snippet is guarded and absolute", () => {
   assert.match(snippet, /# <<< ask completion <<<$/);
   assert.match(snippet, /export ASK_AT_KEY=1/);
   // The guard is the point: a missing file must not error on every new shell.
-  assert.match(snippet, /\[ -f "\/home\/node\/ask\/completions\/ask\.bash" \] && source /);
+  assert.match(snippet, /\[ -f '\/home\/node\/ask\/completions\/ask\.bash' \] && source /);
 });
 
 test("a fresh rc file gets the block appended once", () => {

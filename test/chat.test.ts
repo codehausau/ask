@@ -6,6 +6,7 @@ import {
   askOnce,
   buildRequest,
   createClient,
+  isInsecureHttpEndpoint,
   isLoopbackEndpoint,
   tokenLimitField,
   type ChatClient,
@@ -108,6 +109,29 @@ test("a local endpoint needs no API key, a remote one still does", () => {
     /no API key/,
   );
   assert.throws(() => createClient({ apiKey: undefined }), /no API key/);
+});
+
+test("HTTP transport checks the parsed scheme and hostname, not URL text", () => {
+  for (const url of [
+    "http://api.example.com/v1",
+    "HTTP://API.EXAMPLE.COM/v1",
+    "http://192.168.1.10:8080/v1",
+    "http://0.0.0.0:8080/v1",
+    "http://localhost.example.com/v1",
+    "http://localhost@api.example.com/v1",
+    "http://api.example.com/v1?next=https://localhost",
+  ]) assert.equal(isInsecureHttpEndpoint(url), true, url);
+
+  for (const url of [
+    undefined,
+    "https://api.example.com/v1",
+    "https://api.example.com/v1?next=http://other.example.com",
+    "http://localhost:11434/v1",
+    "HTTP://LOCALHOST:11434/v1",
+    "http://ollama.localhost/v1",
+    "http://127.0.0.1:8080/v1",
+    "http://[::1]:8080/v1",
+  ]) assert.equal(isInsecureHttpEndpoint(url), false, String(url));
 });
 
 test("empty prompt is rejected before any request", () => {

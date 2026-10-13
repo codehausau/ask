@@ -7,6 +7,8 @@
 // The failure that matters most: a response truncated by a token cap would
 // silently chop the end off your file. That is a hard refusal, not a warning.
 
+import { terminalField } from "./terminal.ts";
+
 export interface FenceResult {
   readonly content: string;
   /** True when a wrapping ``` fence was removed. */
@@ -36,6 +38,8 @@ export interface WriteTargetPath {
   readonly target: string;
   readonly exists: boolean;
   readonly isFile: boolean;
+  /** Based on lstat: Git tracks the link object, not the file it points to. */
+  readonly isSymlink: boolean;
 }
 
 /**
@@ -45,6 +49,9 @@ export interface WriteTargetPath {
 export function checkWriteTargetPath(input: WriteTargetPath): string[] {
   if (input.target.trim().length === 0) {
     return ["/write needs a path, e.g. /write src/chat.ts 'add a docstring'"];
+  }
+  if (input.isSymlink) {
+    return [`${input.target} is a symbolic link; name the file it points to instead`];
   }
   if (!input.exists) {
     return [`${input.target} does not exist; use /create to write a new file`];
@@ -245,7 +252,18 @@ export function looksLikeEdit(question: string): boolean {
   return opening.some((word) => EDIT_VERBS.includes(word));
 }
 
-/** Single-quote a string for a copy-pasteable shell suggestion. */
+/** Quote for Bash/zsh, rendering control characters visibly without changing the argument. */
 export function shellQuote(value: string): string {
+  if (terminalField(value) !== value) {
+    const escaped = Array.from(value, (char) => {
+      if (char === "\\" || char === "'") return `\\${char}`;
+      if (terminalField(char) === char) return char;
+      // Byte escapes preserve UTF-8 filenames even under LC_ALL=C, where a
+      // shell's Unicode escapes may not decode to the original bytes.
+      return [...Buffer.from(char, "utf8")]
+        .map((byte) => `\\x${byte.toString(16).padStart(2, "0")}`).join("");
+    }).join("");
+    return `$'${escaped}'`;
+  }
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }

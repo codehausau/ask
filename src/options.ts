@@ -7,6 +7,7 @@ export const OPTIONS = {
   system: { type: "string", short: "s" },
   "system-file": { type: "string" },
   "base-url": { type: "string" },
+  "allow-insecure-http": { type: "boolean" },
   "api-key": { type: "string" },
   file: { type: "string", short: "f", multiple: true },
   "max-tokens": { type: "string" },

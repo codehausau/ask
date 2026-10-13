@@ -4,6 +4,8 @@
 // terminal, so piped output and CI logs stay clean. The cursor is never hidden,
 // so a Ctrl-C mid-request cannot leave the terminal in a bad state.
 
+import { terminalField } from "./terminal.ts";
+
 export interface SpinnerStream {
   write(chunk: string): unknown;
   readonly isTTY?: boolean | undefined;
@@ -67,7 +69,7 @@ export function renderFrame(
 ): string {
   const seconds = (elapsedMs / 1000).toFixed(1);
   // The erase stays outside the styling, so a reset cannot swallow it.
-  return `${CLEAR_LINE}${style(`${frame} ${label}… ${seconds}s`)}`;
+  return `${CLEAR_LINE}${style(`${terminalField(frame)} ${terminalField(label)}… ${seconds}s`)}`;
 }
 
 /**

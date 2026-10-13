@@ -22,7 +22,7 @@
 # Set ASK_FZF=0 to force plain completion even when fzf is installed.
 
 # Kept in sync with src/options.ts by test/completion.test.ts.
-_ASK_FLAGS="--all-matches --api-key --apply --base-url --compact --create \
+_ASK_FLAGS="--all-matches --allow-insecure-http --api-key --apply --base-url --compact --create \
 --diff --dry-run --file \
 --help --install-completion \
 --include-secrets --json --max-file-bytes --max-files --max-tokens \
@@ -42,27 +42,61 @@ _ASK_VERBS="/compact /create /diff /new /reset /session /sessions /skills /switc
 # Most candidates offered for a recursive search, to keep TAB responsive.
 _ASK_SEARCH_LIMIT=${_ASK_SEARCH_LIMIT:-50}
 
+# Match src/git.ts's subprocess policy without changing the interactive shell's
+# environment. Completion runs before the CLI, so it needs its own safe wrapper.
+_ask_git() (
+  export LC_ALL=C
+  local name
+  local -u upper
+  while IFS= read -r name; do
+    upper=$name
+    case "$upper" in
+      SHELLOPTS|BASHOPTS)
+        # Bash makes these readonly; removing the export is sufficient.
+        export -n "${name?}" || return 1
+        ;;
+      GIT_*|LD_*|DYLD_*|OPENAI_*|ASK_*|NODE_OPTIONS|BASH_ENV|ENV|CDPATH|IFS)
+        unset -v "$name" || return 1
+        ;;
+    esac
+  done < <(compgen -e)
+  GIT_TERMINAL_PROMPT=0 GIT_NO_LAZY_FETCH=1 GIT_ATTR_NOSYSTEM=1 command git \
+    --no-pager --no-optional-locks --no-lazy-fetch --literal-pathspecs \
+    -c core.fsmonitor=false "$@"
+)
+
 # Candidates for the picker and the search fallback: every file, plus every
 # directory that contains one, so `@somedir` can attach a whole tree. Directories
 # are derived from the file list rather than walked separately, which keeps them
 # consistent with .gitignore.
-_ask_all_paths() {
-  local files
-  if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    files=$(git ls-files --cached --others --exclude-standard 2> /dev/null)
-  else
-    files=$(find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' \
-      -printf '%P\n' 2> /dev/null)
-  fi
+_ask_all_paths0() {
+  local file parent
+  while IFS= read -r -d '' file; do
+    file=${file#./}
+    [ -n "$file" ] || continue
+    printf '%s\0' "$file"
+    parent=$file
+    while [[ $parent == */* ]]; do
+      parent=${parent%/*}
+      [ -n "$parent" ] && printf '%s/\0' "$parent"
+    done
+  done < <(
+    if _ask_git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+      _ask_git ls-files --cached --others --exclude-standard -z 2> /dev/null
+    else
+      find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -print0 2> /dev/null
+    fi
+  ) | LC_ALL=C sort -zu
+}
 
-  {
-    printf '%s\n' "$files"
-    # Each parent directory, with a trailing slash to mark it as one.
-    printf '%s\n' "$files" | awk -F/ 'NF > 1 {
-      prefix = ""
-      for (i = 1; i < NF; i++) { prefix = prefix $i "/"; print prefix }
-    }'
-  } | sed '/^$/d' | LC_ALL=C sort -u
+# Line-oriented search helpers cannot represent embedded newlines. Pickers use
+# the NUL stream directly, including Git names that would otherwise be C-quoted.
+_ask_all_paths() {
+  local file
+  while IFS= read -r -d '' file; do
+    [[ $file == *$'\n'* ]] && continue
+    printf '%s\n' "$file"
+  done < <(_ask_all_paths0)
 }
 
 # Recursive substring search, mirroring what `ask` does when @needle is not a
@@ -78,7 +112,7 @@ _ask_search_paths() {
 # closes the menu exactly as ENTER does — that is what a shell user's fingers
 # expect. `askf` deliberately does not include it: there TAB is how you select
 # more than one file, which is the whole point of that helper.
-_ASK_FZF_COMMON=(--height=40% --reverse --border --info=inline)
+_ASK_FZF_COMMON=(--height=40% --reverse --border --info=inline --read0 --print0)
 _ASK_FZF_SINGLE=("${_ASK_FZF_COMMON[@]}" --bind=tab:accept)
 
 # True when an interactive fzf picker should be used. Requires fzf, a terminal
@@ -93,8 +127,8 @@ _ask_use_fzf() {
 _ask_pick() {
   local query=$1 prefix=$2 chosen
 
-  chosen=$(
-    _ask_all_paths | fzf "${_ASK_FZF_SINGLE[@]}" \
+  IFS= read -r -d '' chosen < <(
+    _ask_all_paths0 | fzf "${_ASK_FZF_SINGLE[@]}" \
       --query="$query" \
       --select-1 \
       --exit-0 \
@@ -102,6 +136,7 @@ _ask_pick() {
   ) || return 1
 
   [ -n "$chosen" ] || return 1
+  if [[ -z $prefix && $chosen == -* ]]; then chosen=./$chosen; fi
   COMPREPLY=("${prefix}${chosen}")
   compopt -o filenames 2> /dev/null
   return 0
@@ -114,14 +149,18 @@ _ask_paths() {
   # Sorted, because compgen returns raw directory order.
   while IFS= read -r item; do
     [ -n "$item" ] || continue
+    # compgen is line-oriented: never offer fragments of a newline filename.
+    [[ -e $item || -L $item ]] || continue
     if [[ -d $item ]]; then
+      if [[ -z $prefix && $item == -* ]]; then item=./$item; fi
       COMPREPLY+=("${prefix}${item}/")
     else
+      if [[ -z $prefix && $item == -* ]]; then item=./$item; fi
       COMPREPLY+=("${prefix}${item}")
     fi
   done < <(compgen -f -- "$partial" | LC_ALL=C sort)
 
-  # Let bash escape spaces and other awkward characters in filenames.
+  # Filename/directory behaviour; _ask_complete applies explicit shell quoting.
   compopt -o filenames 2> /dev/null
 
   # A lone directory match: no trailing space, so you can keep descending.
@@ -146,19 +185,41 @@ _ask_paths_or_search() {
   fi
 }
 
+# Readline's default filename quoting does not escape every shell metacharacter
+# (notably $ and closing parentheses). Quote ourselves at a verified unquoted
+# boundary, and tell readline not to quote the already-escaped word a second time.
+_ask_quote_completions() {
+  local i
+  for ((i = 0; i < ${#COMPREPLY[@]}; i++)); do
+    printf -v 'COMPREPLY[i]' '%q' "${COMPREPLY[i]}"
+  done
+  compopt -o noquote 2> /dev/null
+  return 0
+}
+
 _ask_complete() {
-  local cur prev
+  local cur prev word before
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD - 1]}
   COMPREPLY=()
+  # %q is for an unquoted word. Quoted or nested shell syntax stays untouched;
+  # users can complete an unquoted prefix before adding their quoted question.
+  case "$cur" in
+    *\"*|*\'*|*\`*|*\$*) return 0 ;;
+  esac
+  word=$cur
+  if [[ $prev == @ && ${COMP_LINE:0:COMP_POINT} == *"@$cur" ]]; then word=@$cur; fi
+  before=${COMP_LINE:0:COMP_POINT-${#word}}
+  _ask_at_unquoted_boundary "$before" || return 0
 
   # Value of the flag that precedes the cursor.
   case $prev in
     -f | --file | --system-file)
       if _ask_use_fzf; then
-        _ask_pick "$cur" "" && return 0
+        if _ask_pick "$cur" ""; then _ask_quote_completions; return 0; fi
       fi
       _ask_paths "$cur" ""
+      _ask_quote_completions
       return 0
       ;;
     --skill)
@@ -177,6 +238,7 @@ _ask_complete() {
       mapfile -t COMPREPLY < <(
         printf '%s\n' "${names[@]}" | LC_ALL=C sort -u | grep -i -- "^${cur}" || true
       )
+      _ask_quote_completions
       return 0
       ;;
     --token-field)
@@ -185,7 +247,14 @@ _ask_complete() {
       ;;
     -m | --model)
       # Export ASK_MODELS="gpt-4o-mini my-gateway-model" to get suggestions.
-      mapfile -t COMPREPLY < <(compgen -W "${ASK_MODELS-}" -- "$cur")
+      # compgen -W evaluates shell expansions in its word list. Model names are
+      # data, so split whitespace without evaluation and quote the matches.
+      local model models=()
+      IFS=$' \t\n' read -r -d '' -a models < <(printf '%s\0' "${ASK_MODELS-}")
+      for model in "${models[@]}"; do
+        [[ $model == "$cur"* ]] && COMPREPLY+=("$model")
+      done
+      _ask_quote_completions
       return 0
       ;;
     -s | --system | --base-url | --api-key | --max-tokens | --temperature | \
@@ -195,16 +264,27 @@ _ask_complete() {
       ;;
   esac
 
+  # With Bash's default COMP_WORDBREAKS, @pick arrives as separate @ and pick
+  # words. Filename completion still replaces the whole @-prefixed word, so
+  # reconstruct the lookup while keeping @ in the returned candidate.
+  # Do not change COMP_WORDBREAKS globally: that would affect other commands.
+  local ref=0 query=""
+  if [[ $prev == @ && ${COMP_LINE:0:COMP_POINT} == *"@$cur" ]]; then
+    ref=1; query=$cur
+  elif [[ $cur == @* ]]; then
+    ref=1; query=${cur#@}
+  fi
+  if ((ref)); then
+    if _ask_use_fzf; then
+      _ask_pick "$query" "@" || COMPREPLY=()
+    else
+      _ask_paths_or_search "$query" "@"
+    fi
+    _ask_quote_completions
+    return 0
+  fi
+
   case $cur in
-    @*)
-      if _ask_use_fzf; then
-        _ask_pick "${cur#@}" "@" && return 0
-        # Picker cancelled: leave the word untouched.
-        COMPREPLY=("$cur")
-        return 0
-      fi
-      _ask_paths_or_search "${cur#@}" "@"
-      ;;
     -*)
       mapfile -t COMPREPLY < <(compgen -W "$_ASK_FLAGS" -- "$cur")
       ;;
@@ -226,6 +306,7 @@ _ask_complete() {
       fi
       ;;
   esac
+  _ask_quote_completions
   return 0
 }
 
@@ -245,6 +326,53 @@ _ask_insert_at() {
   READLINE_POINT=$((${#before} + 1))
 }
 
+# %q is safe only at an unquoted shell-word boundary. Recognise simple words
+# and quotes, but decline shell expansions/operators rather than trying to
+# parse nested shell syntax. In those contexts typing @ stays literal.
+_ask_at_unquoted_boundary() {
+  local text=$1 char quote="" escaped=0 boundary=0 i
+  for ((i = 0; i < ${#text}; i++)); do
+    char=${text:i:1}
+    [[ $char == $'\n' ]] && return 1
+    if ((escaped)); then
+      escaped=0
+      boundary=0
+      continue
+    fi
+    case "$quote" in
+      single)
+        [[ $char == "'" ]] && quote=""
+        ;;
+      double)
+        case "$char" in
+          '"') quote="" ;;
+          \\) escaped=1 ;;
+          '$'|'`') return 1 ;;
+        esac
+        ;;
+      *)
+        boundary=0
+        case "$char" in
+          "'") quote=single ;;
+          '"') quote=double ;;
+          \\) escaped=1 ;;
+          ' '|$'\t') boundary=1 ;;
+          '$'|'`'|';'|'|'|'&'|'('|')'|'<'|'>'|'#') return 1 ;;
+        esac
+        ;;
+    esac
+  done
+  [[ -z $quote && $escaped == 0 && $boundary == 1 ]]
+}
+
+_ask_insert_ref() {
+  local before=$1 after=$2 chosen=$3
+  # This becomes executable shell input on ENTER, not just display text.
+  printf -v chosen '%q' "$chosen"
+  READLINE_LINE="${before}@${chosen} ${after}"
+  READLINE_POINT=$((${#before} + ${#chosen} + 2))
+}
+
 _ask_at_widget() {
   local before=${READLINE_LINE:0:READLINE_POINT}
   local after=${READLINE_LINE:READLINE_POINT}
@@ -255,8 +383,8 @@ _ask_at_widget() {
     _ask_insert_at "$before" "$after"
     return 0
   fi
-  # Mid-word (user@host, name@2x.png): plain `@`.
-  if [[ $before =~ [^[:space:]]$ ]]; then
+  # Mid-word, quoted prompt, or shell expression: plain `@`.
+  if ! _ask_at_unquoted_boundary "$before"; then
     _ask_insert_at "$before" "$after"
     return 0
   fi
@@ -266,14 +394,13 @@ _ask_at_widget() {
     return 0
   fi
 
-  chosen=$(
-    _ask_all_paths | fzf "${_ASK_FZF_SINGLE[@]}" --prompt='ask @ ' 2> /dev/tty
+  IFS= read -r -d '' chosen < <(
+    _ask_all_paths0 | fzf "${_ASK_FZF_SINGLE[@]}" --prompt='ask @ ' 2> /dev/tty
   ) || chosen=""
 
   if [ -n "$chosen" ]; then
     # Trailing space so the question can be typed straight after.
-    READLINE_LINE="${before}@${chosen} ${after}"
-    READLINE_POINT=$((${#before} + ${#chosen} + 2))
+    _ask_insert_ref "$before" "$after" "$chosen"
   else
     # Cancelled: behave as if `@` had simply been typed.
     _ask_insert_at "$before" "$after"
@@ -292,15 +419,17 @@ if command -v fzf > /dev/null 2>&1; then
     local -a picked=() args=()
     local item
 
-    mapfile -t picked < <(
+    while IFS= read -r -d '' item; do
+      picked+=("$item")
+    done < <(
       # No tab:accept here: TAB toggles selection, which is why askf exists.
-      _ask_all_paths | fzf "${_ASK_FZF_COMMON[@]}" --multi --prompt='ask @ '
+      _ask_all_paths0 | fzf "${_ASK_FZF_COMMON[@]}" --multi --prompt='ask @ '
     )
     if [ ${#picked[@]} -eq 0 ]; then
       return 1
     fi
     for item in "${picked[@]}"; do
-      args+=(-f "$item")
+      args+=("--file=$item")
     done
     ask "${args[@]}" "$@"
   }

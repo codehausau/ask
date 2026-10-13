@@ -7,7 +7,7 @@
 //
 // No tools, no agent loop, no follow-up turns: exactly one HTTP request.
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -18,6 +18,7 @@ import {
   askOnce,
   buildRequest,
   createClient,
+  isInsecureHttpEndpoint,
   isLoopbackEndpoint,
   DEFAULT_MODEL,
   DEFAULT_SYSTEM,
@@ -25,10 +26,25 @@ import {
 } from "./chat.ts";
 import { collectContext, extractRefs, renderPrompt, type ContextResult } from "./context.ts";
 import { createPalette, NO_COLOUR, supportsColour, type Palette } from "./colour.ts";
-import { extractPathCandidates, suggestNext, type Suggestion } from "./next.ts";
-import { renderMarkdown } from "./render.ts";
+import { mentionedButMissing, suggestNext, type Suggestion } from "./next.ts";
+import { renderDiff, renderMarkdown } from "./render.ts";
+import { escapeJsonForTerminal, sanitizeForTerminal, terminalField } from "./terminal.ts";
 import { gitDiffNoIndex, gitFileState } from "./git.ts";
-import { applyEnvFiles, describeEnvFiles } from "./env.ts";
+import {
+  assertWriteTargetUnchanged,
+  inspectWriteTarget,
+  replaceWriteTarget,
+  WriteSafetyError,
+  type WriteSnapshot,
+} from "./safe-write.ts";
+import {
+  applyEnvFiles,
+  describeEnvFiles,
+  endpointFromEnvFile,
+  PROJECT_ENV_KEYS,
+  type EnvCandidate,
+  type EnvFileReport,
+} from "./env.ts";
 import { applyToRc, findExecutable, installInstructions, pickerStatus } from "./install.ts";
 import {
   discoverSkills,
@@ -46,9 +62,9 @@ import {
   checkCreateResponse,
   CREATE_SYSTEM,
   checkWriteTargetContext,
-  checkWriteTargetPath,
   looksLikeEdit,
   checkWriteResponse,
+  shellQuote,
   stripCodeFence,
   summariseChange,
   WRITE_SYSTEM,
@@ -143,6 +159,8 @@ Options
   -s, --system <text>       system prompt (env ASK_SYSTEM)
       --system-file <path>  read the system prompt from a file
       --base-url <url>      OpenAI-compatible endpoint (env OPENAI_BASE_URL)
+      --allow-insecure-http
+                            allow unencrypted HTTP to non-loopback endpoints
       --api-key <key>       API key (env OPENAI_API_KEY)
   -f, --file <path>         attach a path explicitly; repeatable
       --max-tokens <n>      cap the answer length
@@ -179,7 +197,7 @@ Options
   -h, --help                this help
       --install-completion  print the shell setup block (--apply writes it)
       --no-color            no colour in status output (also NO_COLOR=1)
-      --raw                 print the answer exactly as the model wrote it
+      --raw                 skip Markdown rendering (TTY controls still sanitised)
       --no-next             do not suggest a follow-up command
 `;
 
@@ -187,6 +205,12 @@ class UsageError extends Error {}
 
 /** Configuration problem: reported without dumping the whole usage text. */
 class ConfigError extends Error {}
+
+/** Keep JSON lossless while making its remaining C1/format controls inert on a TTY. */
+function printJson(value: unknown): void {
+  const json = JSON.stringify(value, null, 2) ?? "null";
+  process.stdout.write(`${process.stdout.isTTY ? escapeJsonForTerminal(json) : json}\n`);
+}
 
 /**
  * Read the version from package.json. The relative depth differs between the
@@ -206,19 +230,44 @@ async function readVersion(): Promise<string> {
   return "unknown";
 }
 
-/** .env candidates: the working directory first, then the install root. */
-function envCandidates(): string[] {
+/** All automatic .env sources are restricted, including install-location fallbacks. */
+function envCandidates(): EnvCandidate[] {
   return [
     path.join(process.cwd(), ".env"),
     path.resolve(HERE, "..", "..", ".env"),
     path.resolve(HERE, "..", ".env"),
-  ];
+  ].map((file) => ({ file, allow: PROJECT_ENV_KEYS }));
+}
+
+/** Require an explicitly selected, safe transport before either path builds a client. */
+function checkEndpoint(
+  reports: readonly EnvFileReport[],
+  baseURL: string | undefined,
+  fromFlag: boolean,
+  allowInsecureHttp: boolean,
+): void {
+  const file = fromFlag ? null : endpointFromEnvFile(reports);
+  if (file !== null) {
+    throw new ConfigError(
+      `OPENAI_BASE_URL was loaded from ${terminalField(file)}; refusing to send credentials or context ` +
+        "to an endpoint selected by an automatic .env file.\n" +
+        "Pass --base-url <url> or export OPENAI_BASE_URL in your shell to select the endpoint. " +
+        "Providing an API key does not confirm the destination.",
+    );
+  }
+  if (isInsecureHttpEndpoint(baseURL) && !allowInsecureHttp) {
+    throw new ConfigError(
+      "refusing unencrypted HTTP to a non-loopback endpoint: credentials and context " +
+        "would be sent in cleartext.\n" +
+        "Use an HTTPS endpoint, or pass --allow-insecure-http to explicitly allow this request.",
+    );
+  }
 }
 
 function numberOption(raw: string | undefined, name: string): number | undefined {
   if (raw === undefined) return undefined;
   const value = Number(raw);
-  if (!Number.isFinite(value)) throw new UsageError(`--${name} must be a number, got "${raw}"`);
+  if (!Number.isFinite(value)) throw new UsageError(`--${name} must be a number, got "${terminalField(raw)}"`);
   return value;
 }
 
@@ -262,10 +311,10 @@ function resolutionNotes(context: ContextResult, cwd: string): string[] {
     if (resolution.kind === "path") continue;
     const shown = resolution.paths
       .slice(0, 3)
-      .map((absolute) => path.relative(cwd, absolute))
+      .map((absolute) => terminalField(path.relative(cwd, absolute)))
       .join(", ");
     const more = resolution.paths.length > 3 ? ` (+${resolution.paths.length - 3} more)` : "";
-    notes.push(`@${resolution.ref} → ${shown}${more} [${resolution.kind}]`);
+    notes.push(`@${terminalField(resolution.ref)} → ${shown}${more} [${resolution.kind}]`);
   }
   return notes;
 }
@@ -291,10 +340,10 @@ function printContext(
   }
   for (const block of context.blocks) {
     const note = block.truncated ? paint.yellow("  (truncated)") : "";
-    process.stdout.write(`${paint.bold("attach")}  ${block.path}  ${formatBytes(block.bytes)}${note}\n`);
+    process.stdout.write(`${paint.bold("attach")}  ${terminalField(block.path)}  ${formatBytes(block.bytes)}${note}\n`);
   }
   for (const item of context.skipped) {
-    process.stdout.write(paint.dim(`skip    ${item.path}  (${item.reason})\n`));
+    process.stdout.write(paint.dim(`skip    ${terminalField(item.path)}  (${item.reason})\n`));
   }
 
   const files = Math.ceil(context.totalBytes / 4);
@@ -317,7 +366,7 @@ function printContext(
           (extras.session ? `  history   ~${formatCount(history)}\n` : "") +
           (extras.skills.length > 0
             ? `  skills    ~${formatCount(skillTokens)} (${extras.skills
-                .map((skill) => skill.name)
+                .map((skill) => terminalField(skill.name))
                 .join(", ")})\n`
             : "") +
           `  question  ~${formatCount(question)}\n` +
@@ -328,13 +377,13 @@ function printContext(
 }
 
 function formatCount(value: number): string {
-  return value >= 10_000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+  return value >= 10_000 ? `${(value / 1000).toFixed(1)}k` : terminalField(String(value));
 }
 
 /** Print a session without calling the API. */
 function printSession(session: Session | null, file: string, paint: Palette): void {
   if (!session || session.turns.length === 0) {
-    process.stdout.write(`no active thread\n${paint.dim(`(would be stored at ${file})`)}\n`);
+    process.stdout.write(`no active thread\n${paint.dim(`(would be stored at ${terminalField(file)})`)}\n`);
     return;
   }
 
@@ -342,33 +391,33 @@ function printSession(session: Session | null, file: string, paint: Palette): vo
   const partial = spent.reported < spent.turns ? ` (${spent.reported}/${spent.turns} turns)` : "";
 
   process.stdout.write(
-    `${paint.bold(`thread ${sessionLabel(session)}`)}  ${session.turns.length} turn(s)\n` +
+    `${paint.bold(`thread ${terminalField(sessionLabel(session))}`)}  ${session.turns.length} turn(s)\n` +
       paint.dim(
-        `scope   ${session.scope}\n` +
-          `updated ${session.updatedAt}\n` +
+        `scope   ${terminalField(session.scope)}\n` +
+          `updated ${terminalField(session.updatedAt)}\n` +
           `history ~${formatCount(sessionTokens(session))} tokens, resent every turn\n` +
           `spent   ${formatCount(spent.input)} in / ${formatCount(spent.output)} out${partial}\n` +
-          `file    ${file}\n`,
+          `file    ${terminalField(file)}\n`,
       ) +
       "\n",
   );
 
   let total = 0;
   session.turns.forEach((turn, index) => {
-    const refs = turn.refs.length > 0 ? `  [${turn.refs.map((ref) => `@${ref}`).join(" ")}]` : "";
-    const answer = turn.answer.replace(/\s+/g, " ");
+    const refs = turn.refs.length > 0 ? `  [${turn.refs.map((ref) => `@${terminalField(ref)}`).join(" ")}]` : "";
+    const answer = terminalField(turn.answer);
     total += estimateTokens(turn.question) + estimateTokens(turn.answer);
 
     if (turn.summary) {
       // Shown as a summary, not as a question and answer that never happened.
       process.stdout.write(
-        `${index + 1}. ${paint.cyan("summary")} of ${turn.covers ?? "?"} earlier turn(s)${paint.dim(refs)}\n` +
+        `${index + 1}. ${paint.cyan("summary")} of ${terminalField(String(turn.covers ?? "?"))} earlier turn(s)${paint.dim(refs)}\n` +
           `   ${paint.dim(answer.length > 300 ? `${answer.slice(0, 300)}…` : answer)}\n`,
       );
       return;
     }
     process.stdout.write(
-      `${index + 1}. ${paint.bold("you")}: ${turn.question}${paint.dim(refs)}\n` +
+      `${index + 1}. ${paint.bold("you")}: ${terminalField(turn.question)}${paint.dim(refs)}\n` +
         `   ${paint.cyan("llm")}: ${paint.dim(answer.length > 160 ? `${answer.slice(0, 160)}…` : answer)}\n`,
     );
   });
@@ -423,13 +472,13 @@ async function installCompletion(apply: boolean): Promise<number> {
   const update = applyToRc(existing, script);
 
   if (!update.changed) {
-    process.stdout.write(`already configured in ${rcPath}\n${pickerStatus(fzf)}`);
+    process.stdout.write(`already configured in ${terminalField(rcPath)}\n${pickerStatus(fzf)}`);
     return 0;
   }
 
   await writeFile(rcPath, update.text);
   process.stdout.write(
-    `${update.replacedBlock ? "refreshed" : "added"} the ask block in ${rcPath}\n` +
+    `${update.replacedBlock ? "refreshed" : "added"} the ask block in ${terminalField(rcPath)}\n` +
       (update.removedStale > 0
         ? `cleared ${update.removedStale} stale line(s) from earlier attempts\n`
         : "") +
@@ -438,11 +487,11 @@ async function installCompletion(apply: boolean): Promise<number> {
   return 0;
 }
 
-/** Status goes to stderr, dimmed; the answer on stdout stays untouched. */
+/** Status is one line of unstyled text. Escape controls before adding trusted ANSI. */
 function statusWriter(palette: Palette) {
   return {
-    note: (line: string): void => void process.stderr.write(`${palette.dim(line)}\n`),
-    warn: (line: string): void => void process.stderr.write(`${palette.yellow(line)}\n`),
+    note: (line: string): void => void process.stderr.write(`${palette.dim(terminalField(line))}\n`),
+    warn: (line: string): void => void process.stderr.write(`${palette.yellow(terminalField(line))}\n`),
     blank: (): void => void process.stderr.write("\n"),
   };
 }
@@ -453,24 +502,24 @@ async function printSessions(scope: string, active: string, paint: Palette): Pro
 
   if (threads.length === 0) {
     process.stdout.write(
-      `no threads yet for ${paint.bold(path.basename(scope))}\n` +
+      `no threads yet for ${paint.bold(terminalField(path.basename(scope)))}\n` +
         paint.dim("start one by asking something, or 'ask /switch <name>'\n"),
     );
     return;
   }
 
-  process.stdout.write(`threads for ${paint.bold(path.basename(scope))}\n\n`);
+  process.stdout.write(`threads for ${paint.bold(terminalField(path.basename(scope)))}\n\n`);
   // The active thread may be empty and so have no file yet; say so rather than
   // printing a list with nothing marked active.
   if (!threads.some((thread) => thread.name === active)) {
-    process.stdout.write(`${paint.cyan("*")} ${active.padEnd(24)} ${paint.dim("empty")}\n`);
+    process.stdout.write(`${paint.cyan("*")} ${terminalField(active).padEnd(24)} ${paint.dim("empty")}\n`);
   }
   for (const thread of threads) {
     const marker = thread.name === active ? paint.cyan("*") : " ";
     const label = thread.archivedFrom === undefined ? "" : paint.dim("  (archived)");
     process.stdout.write(
-      `${marker} ${thread.name.padEnd(24)} ${String(thread.turns).padStart(3)} turn(s)  ` +
-        paint.dim(`~${thread.historyTokens} tokens  ${thread.updatedAt}`) +
+      `${marker} ${terminalField(thread.name).padEnd(24)} ${String(thread.turns).padStart(3)} turn(s)  ` +
+        paint.dim(`~${thread.historyTokens} tokens  ${terminalField(thread.updatedAt)}`) +
         `${label}\n`,
     );
   }
@@ -490,22 +539,22 @@ async function printSkills(term: string, paint: Palette): Promise<void> {
 
   if (all.length === 0) {
     process.stdout.write(
-      `no skills found\n${paint.dim(`looked in:\n${roots.map((root) => `  ${root}`).join("\n")}\n`)}`,
+      `no skills found\n${paint.dim(`looked in:\n${roots.map((root) => `  ${terminalField(root)}`).join("\n")}\n`)}`,
     );
     return;
   }
   if (shown.length === 0) {
-    process.stdout.write(`no skill matches "${term}" (${all.length} available)\n`);
+    process.stdout.write(`no skill matches "${terminalField(term)}" (${all.length} available)\n`);
     return;
   }
 
-  const heading = term.trim().length > 0 ? `skills matching "${term}"` : "skills";
+  const heading = term.trim().length > 0 ? `skills matching "${terminalField(term)}"` : "skills";
   process.stdout.write(`${paint.bold(heading)}\n\n`);
   for (const skill of shown) {
-    const description = skill.description.length > 0 ? skill.description : "(no description)";
+    const description = terminalField(skill.description.length > 0 ? skill.description : "(no description)");
     process.stdout.write(
-      `${paint.cyan(skill.name)}\n  ${description}\n` +
-        paint.dim(`  ${skill.file}  ${formatBytes(skill.bytes)}\n`),
+      `${paint.cyan(terminalField(skill.name))}\n  ${description}\n` +
+        paint.dim(`  ${terminalField(skill.file)}  ${formatBytes(skill.bytes)}\n`),
     );
   }
   process.stdout.write(
@@ -541,35 +590,6 @@ function printSuggestions(
     status.note(`-- next: ${suggestion.command}`);
     status.note(`--       (${suggestion.why})`);
   }
-}
-
-/**
- * Paths the answer named that exist on disk but were not attached. Existence is
- * the whole guard: a hallucinated filename simply never appears.
- */
-async function mentionedButMissing(
-  answer: string,
-  attached: readonly string[],
-  cwd: string = process.cwd(),
-): Promise<string[]> {
-  const already = new Set(attached);
-  const found: string[] = [];
-
-  for (const candidate of extractPathCandidates(answer)) {
-    if (found.length >= 3) break;
-    if (already.has(candidate)) continue;
-
-    const absolute = path.resolve(cwd, candidate);
-    // Only files inside the working tree, and only real ones.
-    if (!absolute.startsWith(path.resolve(cwd))) continue;
-    const info = await stat(absolute).catch(() => null);
-    if (!info?.isFile()) continue;
-
-    found.push(candidate);
-    already.add(candidate);
-  }
-
-  return found;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -620,7 +640,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (bool("version")) {
-    process.stdout.write(`ask ${await readVersion()}\n`);
+    process.stdout.write(`ask ${terminalField(await readVersion())}\n`);
     return 0;
   }
 
@@ -629,6 +649,14 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const envReports = await applyEnvFiles(envCandidates());
+  for (const report of envReports) {
+    if (report.ignored && report.ignored.length > 0 && !bool("quiet")) {
+      status.note(
+        `-- ignored ${report.ignored.join(", ")} from ${report.file} ` +
+          "(automatic .env files may only set endpoint, key, organisation, project and model)",
+      );
+    }
+  }
 
   const createPath = flag("create");
   const skillTerms = (values["skill"] as string[] | undefined) ?? [];
@@ -645,6 +673,7 @@ async function main(argv: string[]): Promise<number> {
   const writeTarget = flag("write") ?? flag("diff");
   const writeMode = writeTarget !== undefined;
   const diffOnly = flag("diff") !== undefined;
+  let writeSnapshot: WriteSnapshot | null = null;
 
   const stdinText = await readStdin();
   const parsed = extractRefs(positionals.join(" "));
@@ -662,18 +691,7 @@ async function main(argv: string[]): Promise<number> {
   // The target must be in context for the model to edit it; naming it twice is
   // harmless because references are deduplicated.
   if (writeTarget !== undefined) {
-    const absolute = path.resolve(process.cwd(), writeTarget);
-    const info = await stat(absolute).catch(() => null);
-    const problems = checkWriteTargetPath({
-      target: writeTarget,
-      exists: info !== null,
-      isFile: info?.isFile() ?? false,
-    });
-    if (problems.length > 0) {
-      throw new ConfigError(
-        `cannot write:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`,
-      );
-    }
+    writeSnapshot = await inspectWriteTarget(writeTarget);
     turnRefs.push(writeTarget);
   }
 
@@ -702,7 +720,7 @@ async function main(argv: string[]): Promise<number> {
   if (switchTo !== undefined) {
     if (!isValidSessionName(switchTo)) {
       throw new UsageError(
-        `invalid thread name "${switchTo}": letters, digits, dot, dash, underscore`,
+        `invalid thread name "${terminalField(switchTo)}": letters, digits, dot, dash, underscore`,
       );
     }
     await writeCurrentSession(scope, switchTo);
@@ -784,9 +802,11 @@ async function main(argv: string[]): Promise<number> {
     });
 
     if (bool("dry-run")) {
-      process.stdout.write(`${JSON.stringify(compactRequest, null, 2)}\n`);
+      printJson(compactRequest);
       return 0;
     }
+
+    checkEndpoint(envReports, compactBaseURL, flag("base-url") !== undefined, bool("allow-insecure-http"));
 
     const before = sessionTokens(existing);
     const compactClient = createClient({
@@ -812,7 +832,7 @@ async function main(argv: string[]): Promise<number> {
     await saveSession(compacted);
 
     const after = sessionTokens(compacted);
-    process.stdout.write(`${summary.text}\n`);
+    process.stdout.write(`${process.stdout.isTTY ? sanitizeForTerminal(summary.text) : summary.text}\n`);
     if (!bool("quiet")) {
       status.blank();
       status.note(
@@ -889,7 +909,12 @@ async function main(argv: string[]): Promise<number> {
     }
     if (binary.length > 0) {
       status.note("-- convert it and pipe the text in instead, e.g.");
-      status.note(`--   pandoc -t plain '${binary[0]?.path}' | ask 'what is this document?'`);
+      const file = binary[0]!.path;
+      // A local path operand, even if named "-" (stdin) or something URL-like.
+      const operand = path.isAbsolute(file) ? file : `./${file}`;
+      status.note(
+        `--   pandoc -t plain -- ${shellQuote(operand)} | ask 'what is this document?'`,
+      );
       status.note("--   pdftotext file.pdf - | ask 'summarise this'");
     }
   }
@@ -950,7 +975,7 @@ async function main(argv: string[]): Promise<number> {
     });
     if (problems.length > 0) {
       throw new ConfigError(
-        `cannot create:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`,
+        `cannot create:\n${problems.map((line: string) => `  - ${terminalField(line)}`).join("\n")}`,
       );
     }
   }
@@ -965,8 +990,10 @@ async function main(argv: string[]): Promise<number> {
       truncated: block?.truncated ?? false,
     });
     if (problems.length > 0) {
-      throw new ConfigError(`cannot write:\n${problems.map((line: string) => `  - ${line}`).join("\n")}`);
+      throw new ConfigError(`cannot write:\n${problems.map((line: string) => `  - ${terminalField(line)}`).join("\n")}`);
     }
+    if (writeSnapshot === null || block === undefined) throw new ConfigError("cannot write: missing target snapshot");
+    await assertWriteTargetUnchanged(writeSnapshot, block.text);
   }
 
   const prompt = renderPrompt(question, context, stdinText);
@@ -998,9 +1025,11 @@ async function main(argv: string[]): Promise<number> {
   });
 
   if (bool("dry-run")) {
-    process.stdout.write(`${JSON.stringify(request, null, 2)}\n`);
+    printJson(request);
     return 0;
   }
+
+  checkEndpoint(envReports, baseURL, flag("base-url") !== undefined, bool("allow-insecure-http"));
 
   const apiKey = flag("api-key") ?? process.env["OPENAI_API_KEY"];
   if (!apiKey && !isLoopbackEndpoint(baseURL)) {
@@ -1042,7 +1071,7 @@ async function main(argv: string[]): Promise<number> {
     const problems = checkCreateResponse(proposed, result.finishReason);
     if (problems.length > 0) {
       throw new ConfigError(
-        `refusing to create ${createPath}:\n` +
+        `refusing to create ${terminalField(createPath)}:\n` +
           problems.map((line: string) => `  - ${line}`).join("\n"),
       );
     }
@@ -1059,7 +1088,9 @@ async function main(argv: string[]): Promise<number> {
       Buffer.byteLength(proposed, "utf8"),
     )}`;
     status.note(`-- ${summary}`);
-    status.note(`-- untracked; review it, then 'git add ${createPath}'`);
+    // Shell quoting protects the shell; -- and literal pathspecs protect Git's
+    // own parser from leading dashes, wildcard names, and :(...) magic.
+    status.note(`-- untracked; review it, then: git --literal-pathspecs add -- ${shellQuote(createPath)}`);
     writeSummary = `(${summary})`;
   }
 
@@ -1070,6 +1101,9 @@ async function main(argv: string[]): Promise<number> {
     const absolute = path.resolve(process.cwd(), writeTarget);
     const original =
       context.blocks.find((candidate) => candidate.path === targetFile)?.text ?? "";
+    if (writeSnapshot === null) throw new ConfigError("cannot write: missing target snapshot");
+    // Even an unchanged answer or a preview must refer to the file the model saw.
+    await assertWriteTargetUnchanged(writeSnapshot, original);
     const { content, strippedFence } = stripCodeFence(result.text);
     // Preserve the file's trailing-newline convention.
     const proposed = original.endsWith("\n") && !content.endsWith("\n") ? `${content}\n` : content;
@@ -1082,7 +1116,7 @@ async function main(argv: string[]): Promise<number> {
     });
     if (problems.length > 0) {
       throw new ConfigError(
-        `refusing to write ${targetFile}:\n` +
+        `refusing to write ${terminalField(targetFile)}:\n` +
           problems.map((line: string) => `  - ${line}`).join("\n"),
       );
     }
@@ -1103,13 +1137,24 @@ async function main(argv: string[]): Promise<number> {
       // another user could otherwise pre-create that path as a symlink and have
       // this write follow it.
       const scratch = await mkdtemp(path.join(tmpdir(), "ask-diff-"));
-      const temporary = path.join(scratch, path.basename(targetFile));
-      await writeFile(temporary, proposed);
       try {
-        const diff = await gitDiffNoIndex(absolute, temporary, colour.enabled);
+        const beforeDir = path.join(scratch, "before");
+        const afterDir = path.join(scratch, "after");
+        await mkdir(beforeDir);
+        await mkdir(afterDir);
+        const beforeFile = path.join(beforeDir, path.basename(targetFile));
+        const afterFile = path.join(afterDir, path.basename(targetFile));
+        // Compare the validated context snapshot, not a path that could be
+        // swapped to a symlink before Git opens it.
+        await writeFile(beforeFile, original, { flag: "wx" });
+        await writeFile(afterFile, proposed, { flag: "wx" });
+        // Git's ANSI cannot be distinguished from injected file-content ANSI.
+        // Request a plain patch, sanitise for a TTY, then add our own colours.
+        const diff = await gitDiffNoIndex(beforeFile, afterFile, false);
+        const diffPalette = bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout));
         process.stdout.write(
-          diff ??
-            `${targetFile}: ${change.beforeLines} → ${change.afterLines} lines ` +
+          (diff === null ? null : process.stdout.isTTY ? renderDiff(diff, diffPalette) : diff) ??
+            `${terminalField(targetFile)}: ${change.beforeLines} → ${change.afterLines} lines ` +
               `(git unavailable, so no diff)\n`,
         );
       } finally {
@@ -1126,17 +1171,17 @@ async function main(argv: string[]): Promise<number> {
       if (state !== "clean" && !bool("force")) {
         const detail =
           state === "dirty"
-            ? "it has uncommitted changes"
+            ? "it has uncommitted changes, or its unfiltered bytes/mode differ from HEAD"
             : state === "untracked"
               ? "it is not tracked by git"
-              : "it is not in a git repository";
+              : "it is not in a git repository, or Git is unavailable or lacks the required safety options";
         throw new ConfigError(
-          `refusing to overwrite ${targetFile}: ${detail}, so the current contents ` +
+          `refusing to overwrite ${terminalField(targetFile)}: ${detail}, so the current contents ` +
             "could not be recovered. Commit or stash first, or pass --force.",
         );
       }
 
-      await writeFile(absolute, proposed);
+      await replaceWriteTarget(writeSnapshot, original, proposed);
       const summary =
         `wrote ${targetFile}: ${change.beforeLines} → ${change.afterLines} lines, ` +
         `${formatBytes(change.beforeBytes)} → ${formatBytes(change.afterBytes)}`;
@@ -1167,31 +1212,25 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (bool("json")) {
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          model: result.model,
-          text: result.text,
-          usage: result.usage,
-          finishReason: result.finishReason,
-          context: {
-            files: context.blocks.map((block) => block.path),
-            bytes: context.totalBytes,
-            skipped: context.skipped,
-            resolutions: context.resolutions.map((resolution) => ({
-              ref: resolution.ref,
-              kind: resolution.kind,
-              paths: resolution.paths.map((absolute) => path.relative(process.cwd(), absolute)),
-            })),
-          },
-          session: saved
-            ? { name: sessionLabel(saved), turns: saved.turns.length, scope: saved.scope }
-            : null,
-        },
-        null,
-        2,
-      )}\n`,
-    );
+    printJson({
+      model: result.model,
+      text: result.text,
+      usage: result.usage,
+      finishReason: result.finishReason,
+      context: {
+        files: context.blocks.map((block) => block.path),
+        bytes: context.totalBytes,
+        skipped: context.skipped,
+        resolutions: context.resolutions.map((resolution) => ({
+          ref: resolution.ref,
+          kind: resolution.kind,
+          paths: resolution.paths.map((absolute) => path.relative(process.cwd(), absolute)),
+        })),
+      },
+      session: saved
+        ? { name: sessionLabel(saved), turns: saved.turns.length, scope: saved.scope }
+        : null,
+    });
     return 0;
   }
 
@@ -1200,14 +1239,16 @@ async function main(argv: string[]): Promise<number> {
     // Markdown is rendered only for a terminal: redirected output must stay
     // byte-identical to what the model wrote.
     const answerPalette =
-      bool("raw") || bool("no-color") ? NO_COLOUR : createPalette(supportsColour(process.stdout));
+      !process.stdout.isTTY || bool("raw") || bool("no-color")
+        ? NO_COLOUR : createPalette(supportsColour(process.stdout));
     // A pty can report 0 columns, which is not nullish, so ?? is not enough.
     const columns = process.stdout.columns;
     const width = typeof columns === "number" && columns >= 40 ? columns : 80;
+    const shown = process.stdout.isTTY ? sanitizeForTerminal(result.text) : result.text;
     process.stdout.write(
       answerPalette.enabled
-        ? renderMarkdown(result.text, { palette: answerPalette, width })
-        : `${result.text}\n`,
+        ? renderMarkdown(shown, { palette: answerPalette, width })
+        : `${shown}\n`,
     );
   }
 
@@ -1269,14 +1310,14 @@ try {
   const palette = process.argv.includes("--no-color")
     ? NO_COLOUR
     : createPalette(supportsColour(process.stderr));
-  const fail = (line: string): void => void process.stderr.write(`${palette.red(line)}\n`);
-  const hint = (line: string): void => void process.stderr.write(`${palette.dim(line)}\n`);
+  const fail = (line: string): void => void process.stderr.write(`${palette.red(sanitizeForTerminal(line))}\n`);
+  const hint = (line: string): void => void process.stderr.write(`${palette.dim(terminalField(line))}\n`);
 
-  if (error instanceof ConfigError) {
+  if (error instanceof ConfigError || error instanceof WriteSafetyError) {
     fail(`ask: ${error.message}`);
     process.exitCode = 2;
   } else if (error instanceof SkillResolutionError) {
-    fail(`ask: ${error.message}`);
+    fail(`ask: ${terminalField(error.message)}`);
     for (const candidate of error.candidates.slice(0, 10)) {
       hint(`      ${candidate}`);
     }
@@ -1287,7 +1328,7 @@ try {
     );
     process.exitCode = 2;
   } else if (error instanceof RefResolutionError) {
-    fail(`ask: ${error.message}`);
+    fail(`ask: ${terminalField(error.message)}`);
     for (const candidate of error.candidates.slice(0, 10)) {
       hint(`      ${candidate}`);
     }
@@ -1299,7 +1340,7 @@ try {
     }
     process.exitCode = 2;
   } else if (error instanceof UsageError) {
-    fail(`ask: ${error.message}`);
+    fail(`ask: ${terminalField(error.message)}`);
     process.stderr.write(`\n${USAGE}`);
     process.exitCode = 2;
   } else {
@@ -1307,7 +1348,7 @@ try {
       error !== null && typeof error === "object" && "status" in error && error.status
         ? ` (HTTP ${String(error.status)})`
         : "";
-    fail(`ask: ${error instanceof Error ? error.message : String(error)}${httpStatus}`);
+    fail(`ask: ${terminalField(error instanceof Error ? error.message : String(error))}${terminalField(httpStatus)}`);
     process.exitCode = 1;
   }
 }

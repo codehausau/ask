@@ -12,6 +12,7 @@ import { marked, type Token, type Tokens } from "marked";
 
 import type { Palette } from "./colour.ts";
 import { detectLanguage, highlight } from "./highlight.ts";
+import { sanitizeForTerminal } from "./terminal.ts";
 
 export interface RenderOptions {
   readonly palette: Palette;
@@ -21,8 +22,9 @@ export interface RenderOptions {
 
 const BULLETS = ["•", "◦", "·"] as const;
 
-/** Render an answer for a terminal. Returns the input unchanged when plain. */
+/** Render an answer for a terminal. Sanitise before introducing our own ANSI. */
 export function renderMarkdown(text: string, options: RenderOptions): string {
+  text = sanitizeForTerminal(text);
   if (!options.palette.enabled) return text;
 
   let tokens: Token[];
@@ -37,6 +39,19 @@ export function renderMarkdown(text: string, options: RenderOptions): string {
   const rendered = renderTokens(tokens, options.palette, width, 0);
   // Blocks each end with their own blank line, which doubles up between them.
   return `${tidyBlankLines(rendered)}\n`;
+}
+
+/** Git output is requested without colour; only our own trusted styling is added. */
+export function renderDiff(text: string, palette: Palette): string {
+  return sanitizeForTerminal(text).split("\n").map((line) => {
+    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+      return palette.bold(line);
+    }
+    if (line.startsWith("+")) return palette.cyan(line);
+    if (line.startsWith("-")) return palette.red(line);
+    if (line.startsWith("@@")) return palette.cyan(line);
+    return line;
+  }).join("\n");
 }
 
 /**

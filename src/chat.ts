@@ -106,6 +106,17 @@ export function isLoopbackEndpoint(baseURL: string | undefined): boolean {
   }
 }
 
+/** HTTP is unencrypted; only recognised loopback endpoints are exempt by default. */
+export function isInsecureHttpEndpoint(baseURL: string | undefined): boolean {
+  if (baseURL === undefined) return false;
+  try {
+    return new URL(baseURL).protocol === "http:" && !isLoopbackEndpoint(baseURL);
+  } catch {
+    // Malformed endpoint URLs are rejected by the SDK when building the request.
+    return false;
+  }
+}
+
 export function createClient({
   apiKey,
   baseURL,

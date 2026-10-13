@@ -40,13 +40,35 @@ git clone git@github.com:codehausau/ask.git
 cd ask
 pnpm install
 pnpm build
-cp .env.example .env     # add your key, and a base URL if not using OpenAI
+cp .env.example .env     # add your key; export OPENAI_BASE_URL for a custom endpoint
 ```
 
 `.env` is read from the working directory first, then the install root.
 **Anything already exported wins over the file**, so a shell `OPENAI_API_KEY` is
 never silently replaced by a stale `.env`. If a key cannot be found, the error
 lists every file that was checked and what each one defined.
+
+All automatically discovered `.env` files, including install-location fallbacks,
+may set only `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`,
+`OPENAI_PROJECT_ID`, and `ASK_MODEL`. Other keys are ignored and their names
+reported on stderr (`--quiet` suppresses the notice). Canonical paths are
+deduplicated so the same file is loaded once, even through a symlink.
+Export settings such as `ASK_SYSTEM`, `ASK_STATE_DIR`, and `ASK_SKILLS_DIR` in
+your shell instead, or use the corresponding CLI option where available.
+
+**Choose the endpoint explicitly.** An `OPENAI_BASE_URL` loaded from any automatic
+`.env` file is refused before sending a request, even if that file also supplies
+an API key or the endpoint is local. Set `--base-url <url>` or export
+`OPENAI_BASE_URL` in your shell instead; this prevents a repository from choosing
+where your credentials, attached files, and session history are sent. The same
+rule applies to `/compact`. Offline `--dry-run` and `--show-context` remain usable.
+
+**Remote endpoints must use HTTPS by default.** HTTP is allowed for recognised
+loopback endpoints (`localhost`, `*.localhost`, `127.0.0.1`, and `[::1]`), so
+local servers work as before. To deliberately use a non-loopback HTTP endpoint,
+pass `--allow-insecure-http`; credentials and context will be sent unencrypted.
+This is a per-invocation flag for both normal requests and `/compact`, and does
+not authorize an endpoint selected only by a `.env` file.
 
 Or straight from a release, no toolchain required:
 
@@ -56,22 +78,44 @@ npm install --global \
   "https://github.com/codehausau/ask/releases/download/v$VERSION/codehaus-ask-$VERSION.tgz"
 ```
 
-Upgrading later is one command (the symlink points at `dist/`, which is
-gitignored, so a rebuild is what actually publishes the change):
+### Make a source checkout available as `ask`
+
+A fresh pnpm installation may have no global binary directory configured.
+Run this once:
 
 ```bash
-cd ~/ask && pnpm refresh && exec bash
+pnpm setup
 ```
 
-`exec bash` is only needed when the completion script changed.
-
-Put it on your `PATH` as `ask`:
+**Open a new terminal** so the generated `PNPM_HOME`/`PATH` configuration is loaded.
+Then return to the checkout and build/link it:
 
 ```bash
-pnpm link --global                      # provides the `ask` command
-# or, without linking:
-echo "alias ask='node $PWD/dist/src/cli.js'" >> ~/.bashrc
+cd /path/to/ask
+pnpm build
+pnpm link --global
+pnpm bin --global                       # the global bin directory must be on PATH
+command -v ask                          # verify which command the shell will run
+ask --version
 ```
+
+`ERR_PNPM_NO_GLOBAL_BIN_DIR` means the global-bin setup is missing or the current
+shell has not loaded it. `pnpm link --global` does not build `dist/src/cli.js`,
+so build before linking. If `command -v ask` reports an old alias, remove or update
+that alias so it does not shadow the linked command.
+
+Without global linking, run `node ./dist/src/cli.js --help` from the checkout.
+This also works when the checkout path contains spaces and needs no shell alias.
+
+For a linked source checkout, upgrading later is:
+
+```bash
+cd /path/to/ask
+pnpm refresh
+```
+
+Reopen the shell when the completion script changes. The global link continues
+to use the rebuilt checkout.
 
 ## Smoke test
 
@@ -79,7 +123,7 @@ No API key needed, nothing sent:
 
 ```bash
 pnpm typecheck                                       # strict tsc, no emit
-pnpm test                                            # build + 22 unit tests
+pnpm test                                            # build + unit and integration tests
 pnpm smoke                                           # prints the request JSON
 node dist/src/cli.js --show-context '@src' 'summarise'
 ```
@@ -133,6 +177,15 @@ TAB: menu-complete
 TAB then inserts the first candidate and cycles forward, Shift-TAB backwards.
 
 Set `ASK_FZF=0` to force plain completion even when fzf is installed.
+
+TAB completion handles Bash's default `@` word breaks without changing other
+commands' completion settings. Returned paths are explicitly shell-quoted before
+readline inserts them, including spaces, quotes and command-substitution syntax.
+Complete an **unquoted prefix**, then add your quoted question; completion leaves
+quoted or nested shell expressions untouched. Picker input/output uses NUL-delimited
+records so Git's filename quoting and embedded newlines do not change selected paths.
+`ASK_MODELS` is treated as a whitespace-separated list of literal model names;
+completion never evaluates shell expansions stored in that variable.
 
 ### Opening the picker without TAB
 
@@ -290,11 +343,23 @@ printed to stderr before the request goes out, so you always know what was sent.
 
 Inside a git work tree the candidate list comes from `git ls-files --cached
 --others --exclude-standard`, so `.gitignore` is respected and build output does
-not crowd out your source. This is the one subprocess `ask` runs: read-only,
-local, and never consulted for file *contents*. Outside a repo (or if git is
-missing) it falls back to a filesystem walk. Either way the listing is capped at
+not crowd out your source. Git is the CLI's only subprocess executable, used for
+metadata and diff previews through a hardened wrapper. It does not supply file
+contents for prompts. Outside a repo (or if Git is missing or lacks the required
+safety options) search falls back to a filesystem walk. Either way the listing is capped at
 50,000 entries, and if the cap bites, the error says so rather than claiming the
 file does not exist.
+
+Git calls disable fsmonitor, pagers, optional index writes and lazy fetching, and
+discard inherited Git overrides and loader/shell startup injection variables.
+Diff previews also disable external diff/textconv and isolate attribute handling,
+since even `git diff --no-index` can otherwise invoke clean/process filters.
+Completion's Git calls use the same restrictions in a subshell.
+
+A Git version supporting `--no-lazy-fetch` is required for Git-backed operations.
+Unsupported safety flags are never silently dropped: search falls back as above,
+diff previews report Git unavailable, and `/write` requires an explicit `--force`
+when Git cannot verify the undo copy.
 
 ### Options
 
@@ -303,6 +368,7 @@ file does not exist.
 | `-m, --model <name>` | model id (env `ASK_MODEL`, default `gpt-4o-mini`) |
 | `-s, --system <text>` / `--system-file <path>` | system prompt (env `ASK_SYSTEM`) |
 | `--base-url <url>` | OpenAI-compatible endpoint (env `OPENAI_BASE_URL`) |
+| `--allow-insecure-http` | explicitly allow unencrypted HTTP to a non-loopback endpoint |
 | `--api-key <key>` | API key (env `OPENAI_API_KEY`) |
 | `-f, --file <path>` | attach a path explicitly; repeatable |
 | `--max-tokens <n>` / `--temperature <n>` | only sent when set |
@@ -320,7 +386,7 @@ file does not exist.
 | `--dry-run` | print the request JSON and exit |
 | `--json` | machine-readable result (text, usage, attachments) |
 | `-q, --quiet` | drop the stderr footer |
-| `--raw` | print the answer exactly as the model wrote it, no rendering |
+| `--raw` | skip Markdown rendering; terminal control sanitisation still applies on a TTY |
 | `--no-next` | do not suggest a follow-up command (also `ASK_NEXT=0`) |
 | `-V, --version` | print the version |
 
@@ -355,10 +421,20 @@ highlighting for TypeScript/JavaScript, JSON, shell, YAML and XML.
 └─
 ```
 
-**Redirected output is never touched.** `ask '…' > out.md` and `ask '…' | jq`
-receive exactly the bytes the model produced — verified by a test that counts
-escape sequences on both paths. `--raw` forces plain output on a terminal too,
-and `--no-color`/`NO_COLOR` disables rendering along with colour.
+**Redirected answers are neither rendered nor sanitised**, even with
+`FORCE_COLOR=1`. Use `ask '…' > out.md` to retain the answer text, or
+`ask --json '…' | jq` for structured output. `--raw` skips Markdown rendering on
+a terminal, and `--no-color`/`NO_COLOR` disables rendering along with colour.
+
+On a terminal, answers and `/compact` summaries have control sequences removed
+before styling, including clipboard/title/hyperlink commands and cursor/erase
+sequences. This also applies under `--raw` and `--no-color`. Ordinary Unicode,
+tabs and newlines survive; CRLF becomes LF, lone CR is dropped, and Unicode
+direction-format controls are shown as escapes. Filenames, skill/session names,
+status lines and other single-line fields show controls as visible escapes so
+they cannot forge additional rows. Shell hints retain those characters in safely
+quoted form, so copying them still names the original file. JSON shown on a TTY
+escapes additional C1/format controls without changing its parsed values.
 
 Two rough edges in model output are smoothed over first: a stray empty fence is
 dropped rather than framed, and a document wrapped in a ` ```markdown ` fence that
@@ -380,22 +456,18 @@ Two deliberate limits:
 
 ### Colour
 
-Status is dimmed, warnings are yellow and errors are red, so the model's answer
-stands out as the only plain text on screen:
+Status is dimmed, warnings are yellow and errors are red. Answer and diff
+rendering add their own styling only when stdout is a terminal:
 
 ```
 ⠹ asking qwen2.5-coder:7b… 12.4s          ← dim, stderr
-The answer, in default colour.            ← stdout, never styled
+The rendered answer.                    ← stdout
 -- qwen2.5-coder:7b | thread ask turn 2   ← dim, stderr
 ```
 
-**The answer itself is never coloured.** It goes to stdout and is routinely
-piped, redirected or pasted, where escape codes cause damage; `ask ... > out.md`
-is byte-for-byte the model's text. Colour applies only to what `ask` says *about*
-the request, and only when the relevant stream is a terminal.
-
 Opt out with `--no-color` or [`NO_COLOR=1`](https://no-color.org); force it on
-for a pipe with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
+for status/listing output with `FORCE_COLOR=1`. `NO_COLOR` wins over `FORCE_COLOR`.
+Forcing colour does not enable answer/diff rendering on redirected stdout.
 
 `api.openai.com` gets `max_completion_tokens` (newer models reject
 `max_tokens`); every other base URL gets `max_tokens`. Override with
@@ -482,15 +554,32 @@ CLI writes. Every one of these must hold:
 | --- | --- |
 | the target does not exist | that is `/create`'s job, and the message says so |
 | the target is not a regular file | a directory or device is not editable |
+| the target or a parent on its path is a symbolic link | Git would validate a different object from the one being edited; name the real path instead |
 | the target was not attached | the skip rules exclude credentials, lockfiles and binaries; writing one would rewrite it from contents the model never saw |
 | the target was truncated by the context caps | the model never saw the end of it, so its answer would delete code |
 | the response hit the token cap (`finish_reason: length`) | **the most dangerous case** — writing a truncated answer silently chops the file |
 | the response is empty | nothing to write |
 | the response is under 25% of the original size | looks like a partial answer rather than an edit (`--force` overrides) |
-| the file is not tracked and clean in git | git is the undo button, so it has to be able to act as one (`--force` overrides) |
+| HEAD, index and raw worktree bytes/mode do not match, or the undo blob is unavailable | Git must have an available undo copy (`--force` overrides) |
+| the target's identity, contents or parent directories changed during the request | the answer was generated from a stale file; retry, even when using `--force` |
 
-Everything above the git check is verified *before* the request is sent, so an
-impossible write costs no tokens.
+Path and context checks run before the request. The response and current target
+are checked again afterwards, and Git state is checked before applying a change.
+The Git check uses metadata plus an in-process raw-byte hash rather than
+`git status`, which can run configured clean/process filters. It supports SHA-1
+and SHA-256 repositories and does not trust assume-unchanged flags. Files that
+only match Git after filtering or CRLF conversion conservatively require
+`--force`, even if an ordinary `git status` reports them clean.
+`--force` only overrides Git cleanliness/tracking and the response-size floor;
+it does not bypass symlink or stale-target checks. `/diff` uses the same target
+guards and compares private copies of the original context and proposed text.
+
+An update is written to an exclusive temporary file beside the target and synced
+before a final validation and rename. A staging failure leaves the source intact.
+Ordinary permission bits (including executable bits) and ownership are preserved;
+set-ID bits are not carried over. Replacement updates only the named path, so
+other hard links retain the original contents. Other metadata such as ACLs or
+extended attributes is not copied.
 
 Other behaviour worth knowing:
 
@@ -810,10 +899,18 @@ Walks are sorted and filtered so a `@src` reference stays cheap and predictable:
 - **skipped files**: binary extensions, files containing NUL bytes, lockfiles
 - **skipped credentials**: `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`,
   `credentials.json`, … — even when named explicitly, unless `--include-secrets`
+- **symlinks**: exact, glob and search results are canonicalised before use.
+  Aliases that redirect outside the working directory are skipped, including
+  directory references and symlinked parent components. Secret-name checks apply
+  to both the supplied name and the real target. `--include-secrets` does not
+  override outside-tree symlink rejection. Directory walks skip nested symlink
+  entries; explicitly referenced internal aliases remain usable. Directly named
+  outside files/directories without redirecting links remain explicit choices.
 - **caps**: 256 KB per file (truncated with a marker), 1 MB total, 200 files
 
 Skips are reported by `--show-context` and in `--json` output, so nothing is
 dropped silently. The footer prints the real token usage returned by the API.
+Unresolvable paths, unreadable files and detected path replacements are skipped.
 
 ## Layout and development
 
@@ -835,6 +932,12 @@ test/                 node:test, no network, no key required
 `test/completion.test.ts` drives the completion function through a bash harness
 and asserts its flag list matches `src/options.ts`, so adding a flag without
 updating the completion script fails CI.
+`test/completion-pty.test.ts` also drives real Bash/readline TAB and ENTER through
+a Python 3 standard-library PTY harness, checking the arguments the shell actually
+passes. The fzf cases run when fzf is installed. Development tests require Bash,
+Git, Python 3 and pnpm; these are test tools, not additional runtime dependencies.
+`test/install-global.test.ts` verifies `pnpm setup` and global linking in an
+isolated home, without modifying the developer's shell configuration.
 
 Strict TypeScript (`strict`, `noUncheckedIndexedAccess`,
 `exactOptionalPropertyTypes`, `verbatimModuleSyntax`). Relative imports are
