@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants, writeFileSync } from "node:fs";
+import fs, { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -295,4 +297,83 @@ test("Git state rejects symlink entries rather than validating their referents",
   await raw(["add", "--", "alias.txt"]);
   await raw(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "link"]);
   assert.equal(await gitFileState(path.join(cwd, "alias.txt")), "dirty");
+});
+
+test("hashing rejects a name replaced after open without reading the stale descriptor", async (t) => {
+  const { file } = await fixture(t);
+  const originalOpen = fs.open;
+  let swapped = false;
+  let readCalls = () => 0;
+  const hooked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === file) {
+      await rename(file, `${file}.old`);
+      await writeFile(file, "new uncommitted contents\n");
+      swapped = true;
+      const reader = t.mock.method(handle, "createReadStream");
+      readCalls = () => reader.mock.callCount();
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { hooked.mock.restore(); syncBuiltinESMExports(); });
+  assert.equal(await gitFileState(file), "dirty");
+  assert.equal(swapped, true);
+  assert.equal(readCalls(), 0, "do not hash a descriptor that no longer belongs to the pathname");
+  assert.equal(await readFile(file, "utf8"), "new uncommitted contents\n");
+});
+
+test("hashing rejects a symlink even when open-time no-follow protection is unavailable", async (t) => {
+  const { base, file } = await fixture(t);
+  const outside = path.join(base, "outside.txt");
+  await writeFile(outside, ORIGINAL); // A content-only check would incorrectly report clean.
+  const originalOpen = fs.open;
+  let swapped = false;
+  let readCalls = () => 0;
+  const hooked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (args[0] === file) {
+      await rm(file);
+      await symlink(outside, file);
+      swapped = true;
+      // Simulate a platform without O_NOFOLLOW while retaining the actual
+      // descriptor and lstat results for the replacement link.
+      const flags = Number(args[1]) & ~(constants.O_NOFOLLOW ?? 0);
+      const handle = await originalOpen(file, flags);
+      const reader = t.mock.method(handle, "createReadStream");
+      readCalls = () => reader.mock.callCount();
+      return handle;
+    }
+    return originalOpen(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { hooked.mock.restore(); syncBuiltinESMExports(); });
+  assert.equal(await gitFileState(file), "dirty");
+  assert.equal(swapped, true);
+  assert.equal(readCalls(), 0, "do not read a symlink referent even if its contents match HEAD");
+});
+
+test("hashing rejects a file changed after the stream finishes", async (t) => {
+  const { file } = await fixture(t);
+  const originalOpen = fs.open;
+  let changed = false;
+  const hooked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === file) {
+      const originalStream = handle.createReadStream.bind(handle);
+      t.mock.method(handle, "createReadStream", (...options: Parameters<typeof handle.createReadStream>) => {
+        const stream = originalStream(...options);
+        stream.once("end", () => {
+          writeFileSync(file, "newer work after hashing\n");
+          changed = true;
+        });
+        return stream;
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { hooked.mock.restore(); syncBuiltinESMExports(); });
+  assert.equal(await gitFileState(file), "dirty");
+  assert.equal(changed, true);
+  assert.equal(await readFile(file, "utf8"), "newer work after hashing\n");
 });

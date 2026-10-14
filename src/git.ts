@@ -128,12 +128,14 @@ function sameVersion(before: Stats, after: Stats): boolean {
 }
 
 async function hashWorktreeFile(file: string, algorithm: "sha1" | "sha256") {
-  const named = await lstat(file);
-  if (!named.isFile() || named.isSymbolicLink()) return null;
+  // Open first: a pathname check before open cannot authorise the object that
+  // open eventually returns. Validate the descriptor, then bind it to the name.
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const before = await handle.stat();
-    if (!before.isFile() || !sameVersion(named, before)) return null;
+    if (!before.isFile()) return null;
+    const named = await lstat(file);
+    if (!named.isFile() || named.isSymbolicLink() || !sameVersion(before, named)) return null;
     const hash = createHash(algorithm).update(`blob ${before.size}\0`);
     let bytes = 0;
     if (before.size > 0) {
