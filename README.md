@@ -982,7 +982,8 @@ npm deps and those SHA pins current.
 | [`security.yml`](.github/workflows/security.yml) | push, PR, weekly | `pnpm audit` (runtime blocking, dev advisory); dependency review on PRs; Trivy vulns + secrets + misconfig; TruffleHog over full git history; actionlint + zizmor on these workflows; CycloneDX SBOM artifact |
 | [`codeql.yml`](.github/workflows/codeql.yml) | push, PR, weekly | CodeQL `security-extended` for javascript-typescript |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | weekly, branch protection changes | OpenSSF Scorecard (public repos only; guarded by a visibility check) |
-| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*`; manual validation | typecheck, test, audit, tag/version match check, pack and test one tarball, npm dry-run, SBOM, GitHub attestation, npm publication with provenance, then GitHub Release with the same tarball |
+| [`release-please.yml`](.github/workflows/release-please.yml) | push to `main`; manual on `main` | maintains a version/changelog PR; when merged, creates its tag and GitHub Release and dispatches npm publication at that tag |
+| [`release.yml`](.github/workflows/release.yml) | dispatch at a release tag; tag `v*.*.*`; manual validation | typecheck, test, audit, tag/version match check, pack and test one tarball, npm dry-run, SBOM, GitHub attestation, npm publication with provenance, then attach the same tarball to the GitHub Release |
 
 Run the same gates locally:
 
@@ -1025,26 +1026,69 @@ step. `actions/setup-node` configures npm registry authentication, and the exist
 uses the already tested tarball with lifecycle scripts disabled; it does not
 rebuild the package while the token is available.
 
-### Cut a release
+### Automatic versioning and releases
 
-After merging the publishing changes into `main`, run from an up-to-date checkout:
+Enable **Settings → Actions → General → Workflow permissions → Allow GitHub
+Actions to create and approve pull requests** (the organization must permit it
+too). Release Please uses the built-in `GITHUB_TOKEN`; the only additional secret
+needed for publication is `NPM_TOKEN`. Permissions are scoped per job, including
+`actions: write` for the publication dispatch.
 
-```bash
-git switch main
-git pull --ff-only
-pnpm install --frozen-lockfile
-pnpm check
-pnpm version patch
-git push origin main --follow-tags
-```
+1. Merge changes into `main` using [Conventional Commits](https://www.conventionalcommits.org/):
+   `fix:` bumps the patch version, `feat:` bumps the minor version, and `!` or a
+   `BREAKING CHANGE:` footer marks a breaking change. Before 1.0, breaking changes
+   bump the minor version; from 1.0 onward, they bump the major. For squash merges,
+   use a conventional squash-commit title. Documentation/chore-only changes do
+   not normally open a new release PR.
+2. Release Please opens or updates a release PR containing the next
+   `package.json` version, `CHANGELOG.md`, and `.release-please-manifest.json`.
+   Review it and let the checks pass. If GitHub holds the bot-created PR's workflows
+   for approval, a maintainer with write access must select **Approve workflows
+   to run** on the PR.
+3. Merge that release PR. Release Please creates `v<version>` and its GitHub
+   Release, then explicitly starts `release.yml` at that tag. This explicit
+   dispatch is necessary because tags created by `GITHUB_TOKEN` do not trigger
+   tag-push workflows.
+4. The tagged workflow verifies and publishes the npm package, then uploads its
+   tarball and SBOM to the existing GitHub Release, preserving the changelog.
+   Check the **release** workflow result: the GitHub Release is created before
+   npm publication and does not by itself mean the package is available on npm.
+
+Version bumps and tags are managed by the release PR; routine releases require
+no local version or tagging commands. The configuration lives in
+[`release-please-config.json`](release-please-config.json) and
+[`.release-please-manifest.json`](.release-please-manifest.json).
+
+#### First automated release
+
+The existing `v0.1.0` tag points to the initial commit, before the release workflow
+existed, so pushing it could not run the current publisher. The manifest starts
+from `0.1.0`, and `bootstrap-sha` includes the changes after that initial commit
+in the first automated changelog. The existing feature commits should therefore
+produce a `0.2.0` release PR. Keep the old tag in place and merge the new release
+PR to publish a version tagged at the correct code. After the first Release
+Please release, `bootstrap-sha` is ignored.
+
+#### Publication and recovery
 
 The tag must match `package.json` exactly (`v` followed by its version). Stable
 versions publish to npm's `latest` dist-tag; prereleases such as `0.2.0-beta.1`
 publish to `next`. npm versions are immutable: use a new version for changed
-package contents. The workflow publishes to npm first, then creates the GitHub
-Release with the verified tarball and SBOM. If npm publication succeeds but a
-later GitHub Release step fails, complete that release using the published
-artifact rather than attempting to overwrite the npm version.
+package contents. Direct tag pushes are still supported; when there is no
+existing GitHub Release, the publisher creates one after npm publication.
+
+If the automatic dispatch fails, or publication fails before npm accepts the
+version, fix the cause (for example, a missing `NPM_TOKEN`) and dispatch the
+publisher at the new release tag. Re-running Release Please alone will not
+redispatch a release it already created:
+
+```bash
+gh workflow run release.yml --repo codehausau/ask --ref v0.2.0
+```
+
+Use the actual new tag. If npm publication succeeded but artifact upload failed,
+complete the GitHub Release using the published artifact rather than rerunning
+npm publication for that version.
 
 Manual dispatch on a branch runs validation, packing and the dry-run without
 publishing. Manual dispatch on a version tag also attempts publication, so use
