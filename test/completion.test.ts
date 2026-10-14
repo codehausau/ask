@@ -16,6 +16,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const COMPLETION = path.join(REPO_ROOT, "completions", "ask.bash");
 const HARNESS = path.join(REPO_ROOT, "test", "completion-harness.sh");
 
+/** The copy inside each fixture, referenced by this constant relative path. */
+
 async function fixture(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ask-comp-"));
   await mkdir(path.join(root, "src", "deep"), { recursive: true });
@@ -155,15 +157,15 @@ test("free-text words and free-form flag values are left alone", async () => {
 
 test("the fzf picker is opt-out, and needs both fzf and a terminal", async () => {
   const cwd = await fixture();
-  const probe = `source ${COMPLETION}; _ask_use_fzf; echo "rc=$?"`;
+  const probe = 'source "$1"; _ask_use_fzf; echo "rc=$?"';
 
   // No terminal attached (stderr is a pipe here), so never interactive: this is
   // what keeps the rest of this suite on the plain-completion path.
-  const piped = await run("bash", ["-c", probe], { cwd });
+  const piped = await run("bash", ["-c", probe, "_", COMPLETION], { cwd });
   assert.equal(piped.stdout.trim(), "rc=1");
 
   // Explicit opt-out is honoured regardless.
-  const optOut = await run("bash", ["-c", probe], {
+  const optOut = await run("bash", ["-c", probe, "_", COMPLETION], {
     cwd,
     env: { ...process.env, ASK_FZF: "0" },
   });
@@ -174,7 +176,7 @@ test("the picker and the plain fallback draw from the same candidate list", asyn
   const cwd = await fixture();
   const { stdout } = await run(
     "bash",
-    ["-c", `source ${COMPLETION}; _ask_search_paths buried`],
+    ["-c", 'source "$1"; _ask_search_paths buried', "_", COMPLETION],
     { cwd },
   );
   assert.deepEqual(
@@ -193,14 +195,14 @@ async function atWidget(
   point: number,
 ): Promise<{ line: string; point: number }> {
   const script = [
-    `source ${COMPLETION}`,
+    'source "$1"',
     `READLINE_LINE=${JSON.stringify(line)}`,
     `READLINE_POINT=${point}`,
     "_ask_at_widget",
     'printf "%s\\n%s\\n" "$READLINE_LINE" "$READLINE_POINT"',
   ].join("; ");
 
-  const { stdout } = await run("bash", ["-c", script], {
+  const { stdout } = await run("bash", ["-c", script, "_", COMPLETION], {
     cwd,
     env: { ...process.env, ASK_FZF: "0" },
   });
@@ -235,13 +237,92 @@ test("with no picker available, @ on an ask line degrades to a literal @", async
   assert.deepEqual(await atWidget(cwd, "ask @a.ts ", 10), { line: "ask @a.ts @", point: 11 });
 });
 
+test("picked filenames remain literal shell arguments when the inserted line runs", async () => {
+  const cwd = await fixture();
+  const script = [
+    'source "$1"',
+    '_ask_insert_ref "$2" "$3" "$4"',
+    'printf "%s\\0%s\\0" "$READLINE_LINE" "$READLINE_POINT"',
+    'ask() { printf "%s\\0" "$@"; }',
+    // Execute only the fixed, harmless test cases below. Extra output catches
+    // command substitution or a filename escaping into another command.
+    'eval "$READLINE_LINE"',
+  ].join("\n");
+  const paths = [
+    "src/chat.ts",
+    "name with spaces.ts",
+    "it's-a-file.ts",
+    'a"quoted"file.ts',
+    "x;printf INJECTED;#.md",
+    "$(printf INJECTED).ts",
+    "`printf INJECTED`.ts",
+    "pipe|printf INJECTED",
+    "src/*.ts",
+    "back\\slash.ts",
+    "tab\tname.ts",
+    "line\nbreak.ts",
+  ];
+  for (const chosen of paths) {
+    const { stdout, stderr } = await run(
+      "bash",
+      ["-c", script, "_", COMPLETION, "ask ", "review", chosen],
+      { cwd },
+    );
+    const [line = "", point = "", ...args] = stdout.split("\0");
+    assert.equal(stderr, "", chosen);
+    assert.deepEqual(args, [`@${chosen}`, "review", ""], chosen);
+    assert.equal(Number(point), line.length - "review".length, chosen);
+    if (chosen === "src/chat.ts") assert.equal(line, "ask @src/chat.ts review");
+  }
+});
+
+test("the @ picker only activates at an unquoted shell-word boundary", async () => {
+  const cwd = await fixture();
+  const script = [
+    'source "$1"',
+    'READLINE_LINE="$2$3"',
+    'READLINE_POINT=${#2}',
+    // Observe whether the widget reaches the picker check without needing fzf
+    // or a controlling terminal. Returning false keeps the final @ literal.
+    '_ask_use_fzf() { printf "picker-check\\n" >&2; return 1; }',
+    '_ask_at_widget',
+    'printf "%s\\0%s" "$READLINE_LINE" "$READLINE_POINT"',
+  ].join("\n");
+  const allowed = ["ask ", "askf ", "ask @src/chat.ts ", "ask 'review this' ", 'ask "review this" '];
+  const declined = [
+    "ask 'review ",
+    'ask "review ',
+    'ask "escaped \\"quote ',
+    "ask escaped\\ ",
+    "ask @src/",
+    "ask $(printf ",
+    "ask `printf ",
+    "ask $'review ",
+    "ask $variable ",
+    "ask ; printf ",
+    "ask | printf ",
+    "ask > output ",
+    "ask # comment ",
+    "ask \nprintf ",
+  ];
+  for (const before of [...allowed, ...declined]) {
+    const { stdout, stderr } = await run(
+      "bash",
+      ["-c", script, "_", COMPLETION, before, "suffix"],
+      { cwd },
+    );
+    assert.equal(stderr, allowed.includes(before) ? "picker-check\n" : "", before);
+    assert.equal(stdout, `${before}@suffix\0${before.length + 1}`, before);
+  }
+});
+
 test("the @ binding is opt-in", async () => {
   const cwd = await fixture();
   // Non-interactive shells never bind, and ASK_AT_KEY defaults to off, so
   // sourcing the file cannot silently rebind @ for the whole shell.
   const { stdout } = await run(
     "bash",
-    ["-c", `source ${COMPLETION}; bind -X 2>/dev/null | grep -c '"@"' || true`],
+    ["-c", 'source "$1"; bind -X 2>/dev/null | grep -c \'"@"\' || true', "_", COMPLETION],
     { cwd },
   );
   assert.equal(stdout.trim(), "0");
@@ -253,7 +334,9 @@ test("TAB accepts in the single-select pickers, but toggles in askf", async () =
     "bash",
     [
       "-c",
-      `source ${COMPLETION}; echo "single=\${_ASK_FZF_SINGLE[*]}"; echo "common=\${_ASK_FZF_COMMON[*]}"`,
+      'source "$1"; echo "single=${_ASK_FZF_SINGLE[*]}"; echo "common=${_ASK_FZF_COMMON[*]}"',
+      "_",
+      COMPLETION,
     ],
     { cwd },
   );

@@ -10,6 +10,9 @@
 // apply with /write, raise that cap). Only a model could suggest *intent*, and
 // that would cost tokens on every request and need validating anyway.
 
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
+
 import { shellQuote } from "./write.ts";
 
 export interface Suggestion {
@@ -78,6 +81,44 @@ export function extractPathCandidates(answer: string): string[] {
     found.push(candidate);
   }
 
+  return found;
+}
+
+/** Path-component containment; `..notes` is a valid child, not a parent traversal. */
+function isInside(root: string, file: string): boolean {
+  const relative = path.relative(root, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** Existing, unattached files whose logical and canonical paths stay inside cwd. */
+export async function mentionedButMissing(
+  answer: string,
+  attached: readonly string[],
+  cwd: string = process.cwd(),
+): Promise<string[]> {
+  const root = path.resolve(cwd);
+  const realRoot = await realpath(root).catch(() => null);
+  if (realRoot === null) return [];
+
+  const already = new Set(attached);
+  const found: string[] = [];
+  for (const candidate of extractPathCandidates(answer)) {
+    if (found.length >= 3) break;
+    if (already.has(candidate)) continue;
+
+    const absolute = path.resolve(root, candidate);
+    // Reject sibling prefixes such as /repo-other for /repo, then resolve any
+    // symlinks (including parent components). Canonicalise cwd as well so a
+    // working directory reached through a symlink still behaves normally.
+    if (!isInside(root, absolute)) continue;
+    const real = await realpath(absolute).catch(() => null);
+    if (real === null || !isInside(realRoot, real)) continue;
+    const info = await stat(real).catch(() => null);
+    if (!info?.isFile()) continue;
+
+    found.push(candidate);
+    already.add(candidate);
+  }
   return found;
 }
 

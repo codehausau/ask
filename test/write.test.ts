@@ -42,7 +42,7 @@ test("unfenced content passes through byte-identical", () => {
 });
 
 test("the target must exist and be a regular file", () => {
-  const ok = { target: "src/chat.ts", exists: true, isFile: true };
+  const ok = { target: "src/chat.ts", exists: true, isFile: true, isSymlink: false };
   assert.deepEqual(checkWriteTargetPath(ok), []);
 
   assert.match(checkWriteTargetPath({ ...ok, target: "  " })[0] ?? "", /needs a path/);
@@ -52,6 +52,14 @@ test("the target must exist and be a regular file", () => {
     "creating is a different verb",
   );
   assert.match(checkWriteTargetPath({ ...ok, isFile: false })[0] ?? "", /not a regular file/);
+});
+
+test("write-target validation rejects symbolic links, including dangling ones", () => {
+  for (const exists of [true, false]) {
+    const errors = checkWriteTargetPath({ target: "alias.ts", exists, isFile: false, isSymlink: true });
+    assert.match(errors[0] ?? "", /symbolic link; name the file it points to instead/);
+    assert.doesNotMatch(errors[0] ?? "", /use \/create/);
+  }
 });
 
 test("the target must actually have reached the prompt", () => {

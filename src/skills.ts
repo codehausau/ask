@@ -14,7 +14,7 @@
 // budget. Files a skill refers to are attached with `@` like anything else.
 
 import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -156,21 +156,23 @@ const NOT_A_SKILL: ReadonlySet<string> = new Set([
 ]);
 
 async function readSkill(file: string, root: string, fallbackName: string): Promise<SkillSummary | null> {
-  const info = await stat(file).catch(() => null);
-  if (!info?.isFile()) return null;
-
-  let front: FrontMatter;
+  // Read once rather than stat-then-read: the file could change in between, and
+  // the size then would not describe the text that was parsed. A directory or an
+  // unreadable path throws here, which means "not a skill".
+  let contents: string;
   try {
-    front = parseFrontMatter(await readFile(file, "utf8"));
+    contents = await readFile(file, "utf8");
   } catch {
     return null;
   }
+
+  const front = parseFrontMatter(contents);
   return {
     name: front.name ?? fallbackName,
     description: front.description,
     file,
     root,
-    bytes: info.size,
+    bytes: Buffer.byteLength(contents, "utf8"),
   };
 }
 

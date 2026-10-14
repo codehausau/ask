@@ -6,7 +6,8 @@
 // Reference resolution (exact path, glob, or search) lives in refs.ts; this
 // module turns resolved paths into capped, filtered blocks.
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveRef, type Resolution } from "./refs.ts";
@@ -33,7 +34,11 @@ export type SkipReason =
   | "looks-like-secret"
   | "max-files"
   | "max-total-bytes"
-  | "not-a-regular-file";
+  | "not-a-regular-file"
+  | "symlink-outside-tree"
+  | "unresolvable-path"
+  | "path-changed"
+  | "unreadable";
 
 export interface ContextBlock {
   /** Path relative to `cwd`, as shown to the model. */
@@ -130,29 +135,140 @@ export function extractRefs(prompt: string | undefined): ExtractedPrompt {
   return { refs, question: words.join(" ") };
 }
 
+interface CheckedPath {
+  /** Original name retained for prompt labels and write-target matching. */
+  readonly absolute: string;
+  /** Canonical name used for filesystem access after policy checks. */
+  readonly real: string;
+  readonly info: Stats;
+}
+
 interface WalkState {
   readonly cwd: string;
+  readonly realCwd: string;
   readonly limits: Limits;
   readonly includeSecrets: boolean;
-  readonly found: string[];
+  readonly found: CheckedPath[];
   readonly skipped: SkippedEntry[];
 }
 
-async function walk(dir: string, state: WalkState): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true });
+function skip(absolute: string, state: WalkState, reason: SkipReason): void {
+  state.skipped.push({ path: path.relative(state.cwd, absolute) || ".", reason });
+}
+
+/** Component-aware: `..notes` is a child name, unlike `..` or `../notes`. */
+function isInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** Account for ambient links above cwd without trusting links on the new branch. */
+async function unlinkedPath(absolute: string, state: WalkState): Promise<string | null> {
+  let ancestor = state.cwd;
+  while (!isInside(ancestor, absolute)) {
+    const parent = path.dirname(ancestor);
+    // Different Windows drives have no shared ancestor to canonicalise.
+    if (parent === ancestor) return absolute;
+    ancestor = parent;
+  }
+  const realAncestor = ancestor === state.cwd
+    ? state.realCwd : await realpath(ancestor).catch(() => null);
+  return realAncestor === null ? null : path.resolve(realAncestor, path.relative(ancestor, absolute));
+}
+
+/** Validate before either reading a file or enumerating a directory. */
+async function checkPath(absolute: string, state: WalkState): Promise<CheckedPath | null> {
+  const real = await realpath(absolute).catch(() => null);
+  if (real === null) {
+    skip(absolute, state, "unresolvable-path");
+    return null;
+  }
+  const relative = path.relative(state.cwd, absolute);
+  // Compare against where the path would land without links on its branch.
+  // Directly named outside paths remain usable, including beside a symlinked
+  // cwd, but an alias that redirects outside the working tree is refused.
+  const unlinked = await unlinkedPath(absolute, state);
+  if (unlinked === null) {
+    skip(absolute, state, "unresolvable-path");
+    return null;
+  }
+  if (real !== unlinked && !isInside(state.realCwd, real)) {
+    skip(absolute, state, "symlink-outside-tree");
+    return null;
+  }
+  if (!state.includeSecrets && (isSecretPath(relative) || isSecretPath(real))) {
+    skip(absolute, state, "looks-like-secret");
+    return null;
+  }
+  const info = await stat(real).catch(() => null);
+  if (info === null) {
+    skip(absolute, state, "unresolvable-path");
+    return null;
+  }
+  return { absolute, real, info };
+}
+
+function sameFile(before: Stats, after: Stats): boolean {
+  return before.dev === after.dev && before.ino === after.ino;
+}
+
+async function samePaths(candidate: CheckedPath): Promise<boolean> {
+  return (await realpath(candidate.absolute).catch(() => null)) === candidate.real &&
+    (await realpath(candidate.real).catch(() => null)) === candidate.real;
+}
+
+async function readCheckedFile(candidate: CheckedPath, state: WalkState): Promise<Buffer | null> {
+  // O_NOFOLLOW protects the final component where supported. O_NONBLOCK avoids
+  // hanging if a regular file was replaced with a FIFO before open(). The file
+  // handle's type/identity and the canonical paths are checked before reading.
+  const handle = await open(candidate.real,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  ).catch(() => null);
+  if (handle === null) {
+    skip(candidate.absolute, state, "unreadable");
+    return null;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || !sameFile(candidate.info, info) || !(await samePaths(candidate))) {
+      skip(candidate.absolute, state, "path-changed");
+      return null;
+    }
+    return await handle.readFile();
+  } catch {
+    skip(candidate.absolute, state, "unreadable");
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function walk(dir: CheckedPath, state: WalkState): Promise<void> {
+  const info = await stat(dir.real).catch(() => null);
+  if (!info?.isDirectory() || !sameFile(dir.info, info) || !(await samePaths(dir))) {
+    skip(dir.absolute, state, "path-changed");
+    return;
+  }
+  const entries = await readdir(dir.real, { withFileTypes: true }).catch(() => null);
+  if (entries === null) {
+    skip(dir.absolute, state, "unreadable");
+    return;
+  }
   entries.sort((a, b) => a.name.localeCompare(b.name));
 
   for (const entry of entries) {
     if (state.found.length >= state.limits.maxFiles) {
-      state.skipped.push({ path: path.relative(state.cwd, dir), reason: "max-files" });
+      skip(dir.absolute, state, "max-files");
       return;
     }
-    const absolute = path.join(dir, entry.name);
+    const absolute = path.join(dir.absolute, entry.name);
     const relative = path.relative(state.cwd, absolute);
 
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      await walk(absolute, state);
+      const checked = await checkPath(absolute, state);
+      if (checked?.info.isDirectory()) await walk(checked, state);
+      else if (checked) skip(absolute, state, "path-changed");
       continue;
     }
     if (!entry.isFile()) continue;
@@ -164,11 +280,9 @@ async function walk(dir: string, state: WalkState): Promise<void> {
       state.skipped.push({ path: relative, reason: "lockfile" });
       continue;
     }
-    if (!state.includeSecrets && isSecretPath(relative)) {
-      state.skipped.push({ path: relative, reason: "looks-like-secret" });
-      continue;
-    }
-    state.found.push(absolute);
+    const checked = await checkPath(absolute, state);
+    if (checked?.info.isFile()) state.found.push(checked);
+    else if (checked) skip(absolute, state, "path-changed");
   }
 }
 
@@ -182,14 +296,17 @@ export async function collectContext(
   refs: readonly string[],
   options: CollectOptions = {},
 ): Promise<ContextResult> {
-  const cwd = options.cwd ?? process.cwd();
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  // No lexical fallback: containment cannot be established without this root.
+  const realCwd = await realpath(cwd);
   const limits = resolveLimits(options.limits);
   const includeSecrets = options.includeSecrets ?? false;
 
-  const candidates: string[] = [];
+  const candidates: CheckedPath[] = [];
   const skipped: SkippedEntry[] = [];
   const resolutions: Resolution[] = [];
   const directories: string[] = [];
+  const state: WalkState = { cwd, realCwd, limits, includeSecrets, found: candidates, skipped };
 
   for (const ref of refs) {
     const resolution = await resolveRef(ref, {
@@ -200,25 +317,22 @@ export async function collectContext(
     resolutions.push(resolution);
 
     for (const absolute of resolution.paths) {
-      const info = await stat(absolute);
+      const checked = await checkPath(absolute, state);
+      if (checked === null) continue;
+      const { info } = checked;
 
       if (info.isDirectory()) {
         directories.push(path.relative(cwd, absolute) || ".");
-        await walk(absolute, { cwd, limits, includeSecrets, found: candidates, skipped });
+        await walk(checked, state);
         continue;
       }
       if (!info.isFile()) {
         skipped.push({ path: path.relative(cwd, absolute), reason: "not-a-regular-file" });
         continue;
       }
-      // Explicit file references bypass extension and lockfile filters, but
-      // never silently ship credentials.
-      const relative = path.relative(cwd, absolute);
-      if (!includeSecrets && isSecretPath(relative)) {
-        skipped.push({ path: relative, reason: "looks-like-secret" });
-      } else {
-        candidates.push(absolute);
-      }
+      // Explicit files bypass extension/lockfile filters, but checkPath already
+      // applied containment and secret rules to both alias and canonical names.
+      candidates.push(checked);
     }
   }
 
@@ -226,14 +340,19 @@ export async function collectContext(
   let totalBytes = 0;
   let truncated = false;
 
-  for (const absolute of new Set(candidates)) {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const { absolute } = candidate;
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
     const relative = path.relative(cwd, absolute) || path.basename(absolute);
     if (totalBytes >= limits.maxTotalBytes) {
       skipped.push({ path: relative, reason: "max-total-bytes" });
       truncated = true;
       continue;
     }
-    const buffer = await readFile(absolute);
+    const buffer = await readCheckedFile(candidate, state);
+    if (buffer === null) continue;
     if (isProbablyBinary(buffer)) {
       skipped.push({ path: relative, reason: "binary-content" });
       continue;

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,26 +19,31 @@ const ORIGINAL = "export const value = 1;\n\n// keep this comment\n";
 
 /** Endpoint that replies with whatever `reply` computes from the sent file. */
 async function stub(
-  reply: (file: string) => { content: string; finishReason?: string },
+  reply: (file: string) => { content: string; finishReason?: string } | Promise<{ content: string; finishReason?: string }>,
 ): Promise<{ url: string; count: () => number; close: () => Promise<void> }> {
   let count = 0;
   const server: Server = createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      count += 1;
-      const parsed = JSON.parse(body || "{}") as { model: string; messages: { content: string }[] };
-      const user = parsed.messages.at(-1)?.content ?? "";
-      const file = /<file path="[^"]*">\n([\s\S]*?)\n<\/file>/.exec(user)?.[1] ?? "";
-      const { content, finishReason = "stop" } = reply(file);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          model: parsed.model,
-          choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: finishReason }],
-          usage: { prompt_tokens: 10, completion_tokens: 5 },
-        }),
-      );
+    req.on("end", async () => {
+      try {
+        count += 1;
+        const parsed = JSON.parse(body || "{}") as { model: string; messages: { content: string }[] };
+        const user = parsed.messages.at(-1)?.content ?? "";
+        const file = /<file path="[^"]*">\n([\s\S]*?)\n<\/file>/.exec(user)?.[1] ?? "";
+        const { content, finishReason = "stop" } = await reply(file);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            model: parsed.model,
+            choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: finishReason }],
+            usage: { prompt_tokens: 10, completion_tokens: 5 },
+          }),
+        );
+      } catch (error) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: String(error) } }));
+      }
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -200,6 +205,103 @@ test("a dirty or untracked file is refused without --force", async () => {
   }
 });
 
+test("write and diff refuse tracked symlinks and parent aliases before requesting, even with force", async (t) => {
+  const { cwd, state } = await repo();
+  t.after(() => Promise.all([rm(cwd, { recursive: true, force: true }), rm(state, { recursive: true, force: true })]));
+  const outside = path.join(state, "outside.ts");
+  await writeFile(outside, "outside contents\n");
+  await symlink(path.join(cwd, "widget.ts"), path.join(cwd, "alias.ts"));
+  await symlink(outside, path.join(cwd, "external.ts"));
+  await symlink(path.join(state, "absent.ts"), path.join(cwd, "dangling.ts"));
+  await symlink(cwd, path.join(cwd, "dir-link"), "junction");
+  await symlink(state, path.join(cwd, "external-dir"), "junction");
+  await execFileAsync("git", ["-C", cwd, "add", "-A"]);
+  await execFileAsync("git", ["-C", cwd, "commit", "-q", "-m", "links"]);
+  const endpoint = await stub(() => ({ content: ORIGINAL }));
+  t.after(() => endpoint.close());
+
+  for (const mode of ["/write", "/diff"]) {
+    for (const flags of [[], ["--force"]]) {
+      for (const target of ["alias.ts", "external.ts", "dangling.ts", "dir-link/widget.ts", "external-dir/outside.ts"]) {
+        const result = await runCli([...flags, mode, target, "bump it"], { cwd, state, url: endpoint.url });
+        assert.equal(result.code, 2, result.stderr);
+        assert.match(result.stderr, /symbolic link/);
+        assert.doesNotMatch(result.stderr, /use \/create/);
+      }
+    }
+  }
+  assert.equal(endpoint.count(), 0);
+  assert.equal(await readFile(outside, "utf8"), "outside contents\n");
+  assert.equal(await readFile(path.join(cwd, "widget.ts"), "utf8"), ORIGINAL);
+  assert.equal((await lstat(path.join(cwd, "dangling.ts"))).isSymbolicLink(), true);
+});
+
+test("in-flight target changes cannot be overwritten by force or reported as unchanged", async (t) => {
+  for (const change of ["contents", "same-bytes", "symlink", "no-op", "committed"]) {
+    const { cwd, state } = await repo();
+    t.after(() => Promise.all([rm(cwd, { recursive: true, force: true }), rm(state, { recursive: true, force: true })]));
+    const target = path.join(cwd, "widget.ts");
+    const outside = path.join(state, "outside.ts");
+    await writeFile(outside, "outside contents\n");
+    const latest = `${ORIGINAL}// newer local work\n`;
+    const endpoint = await stub(async (sent) => {
+      assert.equal(sent, ORIGINAL);
+      if (change === "symlink") {
+        await rm(target);
+        await symlink(outside, target);
+      } else if (change === "same-bytes") {
+        await rename(target, path.join(cwd, "original.ts"));
+        await writeFile(target, ORIGINAL);
+      } else {
+        await writeFile(target, latest);
+        if (change === "committed") {
+          await execFileAsync("git", ["-C", cwd, "add", "--", "widget.ts"]);
+          await execFileAsync("git", ["-C", cwd, "commit", "-q", "-m", "newer work"]);
+        }
+      }
+      return { content: change === "no-op" ? sent : sent.replace("value = 1", "value = 2") };
+    });
+    t.after(() => endpoint.close());
+    const flags = change === "committed" ? [] : ["--force"];
+    const result = await runCli([...flags, "/write", "widget.ts", "bump it"], { cwd, state, url: endpoint.url });
+    assert.equal(result.code, 2, `${change}: ${result.stderr}`);
+    assert.match(result.stderr, /target changed|no longer match/);
+    assert.doesNotMatch(result.stderr, /widget\.ts unchanged/);
+    assert.equal(endpoint.count(), 1);
+    assert.equal(await readFile(outside, "utf8"), "outside contents\n");
+    if (change === "symlink") assert.equal((await lstat(target)).isSymbolicLink(), true);
+    else assert.equal(await readFile(target, "utf8"), change === "same-bytes" ? ORIGINAL : latest);
+    if (change === "committed") {
+      const status = await execFileAsync("git", ["-C", cwd, "status", "--porcelain", "--", "widget.ts"]);
+      assert.equal(status.stdout, "", "even a newly clean Git state must not bypass the snapshot check");
+    }
+  }
+});
+
+test("an in-flight parent-directory link swap cannot redirect write or diff", async (t) => {
+  for (const mode of ["/write", "/diff"]) {
+    const { cwd, state } = await repo();
+    t.after(() => Promise.all([rm(cwd, { recursive: true, force: true }), rm(state, { recursive: true, force: true })]));
+    await mkdir(path.join(cwd, "src"));
+    await rename(path.join(cwd, "widget.ts"), path.join(cwd, "src", "widget.ts"));
+    await writeFile(path.join(state, "widget.ts"), "outside contents\n");
+    await execFileAsync("git", ["-C", cwd, "add", "-A"]);
+    await execFileAsync("git", ["-C", cwd, "commit", "-q", "-m", "move source"]);
+    const endpoint = await stub(async (sent) => {
+      await rename(path.join(cwd, "src"), path.join(cwd, "original-src"));
+      await symlink(state, path.join(cwd, "src"), "junction");
+      return { content: sent.replace("value = 1", "value = 2") };
+    });
+    t.after(() => endpoint.close());
+    const result = await runCli(["--force", mode, "src/widget.ts", "bump it"], { cwd, state, url: endpoint.url });
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /parent directory changed/);
+    assert.equal(result.stdout, "");
+    assert.equal(await readFile(path.join(state, "widget.ts"), "utf8"), "outside contents\n");
+    assert.equal(await readFile(path.join(cwd, "original-src", "widget.ts"), "utf8"), ORIGINAL);
+  }
+});
+
 test("extra attached files are references, and a missing target is refused", async () => {
   // Fixed reply: with two files attached, a stub that echoes "the file" cannot
   // know which one is the target — that is the CLI's job, and what is tested.
@@ -306,11 +408,90 @@ test("/create writes a new file and leaves it untracked", async () => {
     assert.equal(run.code, 0, run.stderr);
     assert.equal(await readFile(path.join(cwd, "fresh.ts"), "utf8"), "export const created = true;\n");
     assert.match(run.stderr, /created fresh\.ts: 1 lines/);
-    assert.match(run.stderr, /git add fresh\.ts/);
+    assert.match(run.stderr, /git --literal-pathspecs add -- 'fresh\.ts'/);
     // The content went to the file, not stdout.
     assert.equal(run.stdout.includes("created = true"), false);
   } finally {
     await endpoint.close();
+  }
+});
+
+test("the pandoc hint preserves hostile filenames as local file operands", async (t) => {
+  const endpoint = await stub(() => ({ content: "unused" }));
+  t.after(() => endpoint.close());
+  const { cwd, state } = await repo();
+  t.after(() => Promise.all([
+    rm(cwd, { recursive: true, force: true }),
+    rm(state, { recursive: true, force: true }),
+  ]));
+  const names = [
+    "name with spaces.docx",
+    "quote'; printf INJECTED; #.docx",
+    "$(printf INJECTED).docx",
+    "`printf INJECTED`.docx",
+    "pipe|printf INJECTED.docx",
+    "*.docx",
+    "control\u001b[2J\u009b31m\nfile.docx",
+    "--output=report.txt",
+    "-",
+  ];
+  const script = [
+    'pandoc() { printf "%s\\0" "$@"; }',
+    'ask() { local arg; while IFS= read -r -d "" arg; do printf "%s\\0" "$arg"; done; printf "%s\\0" ASK "$@"; }',
+    // Evaluate only these fixed, harmless test filenames; fake commands expose
+    // the actual Bash-parsed arguments without needing pandoc or an API call.
+    'eval "$1"',
+  ].join("\n");
+  for (const name of names) {
+    await writeFile(path.join(cwd, name), Buffer.from([0, 1, 2]));
+    const result = await runCli(["--dry-run", `--file=${name}`, "explain this"], {
+      cwd, state, url: endpoint.url,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const command = /^--   (pandoc .+)$/m.exec(result.stderr)?.[1];
+    assert.ok(command, result.stderr);
+    const executed = await execFileAsync("bash", ["-c", script, "_", command], { cwd });
+    assert.equal(executed.stderr, "", name);
+    assert.deepEqual(executed.stdout.split("\0"), [
+      "-t", "plain", "--", `./${name}`, "ASK", "what is this document?", "",
+    ], name);
+  }
+  assert.equal(endpoint.count(), 0, "dry-run hints require no network request");
+});
+
+test("the git-add hint stages only the named file despite shell and pathspec syntax", async (t) => {
+  const endpoint = await stub(() => ({ content: "export const created = true;\n" }));
+  t.after(() => endpoint.close());
+  const { cwd, state } = await repo();
+  t.after(() => Promise.all([
+    rm(cwd, { recursive: true, force: true }),
+    rm(state, { recursive: true, force: true }),
+  ]));
+  await writeFile(path.join(cwd, "decoy.ts"), "must not be staged\n");
+  const names = [
+    "name with spaces.ts",
+    "quote'; printf INJECTED; #.ts",
+    "$(printf INJECTED).ts",
+    "`printf INJECTED`.ts",
+    "*.ts",
+    ":(glob)*.ts",
+    "control\u001b[2J\u202e\nfile.ts",
+    "-A",
+    "-",
+  ];
+  const expected: string[] = [];
+  for (const name of names) {
+    const result = await runCli([`--create=${name}`, "create a file"], { cwd, state, url: endpoint.url });
+    assert.equal(result.code, 0, result.stderr);
+    const command = /^-- untracked; review it, then: (.+)$/m.exec(result.stderr)?.[1];
+    assert.ok(command, result.stderr);
+    // Run the actual suggested Git command, but only in this disposable repo.
+    const executed = await execFileAsync("bash", ["-c", command], { cwd });
+    assert.equal(executed.stdout, "", name);
+    assert.equal(executed.stderr, "", name);
+    expected.push(name);
+    const staged = await execFileAsync("git", ["-C", cwd, "diff", "--cached", "--name-only", "-z"]);
+    assert.deepEqual(staged.stdout.split("\0").filter(Boolean).sort(), [...expected].sort(), name);
   }
 });
 

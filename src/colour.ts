@@ -1,13 +1,7 @@
-// Colour for status output only.
-//
-// The model's answer is never coloured: it goes to stdout and is routinely
-// piped, redirected or pasted, where escape codes are a liability. Everything
-// ask says *about* the request — resolution notes, the footer, warnings,
-// errors, the spinner — is dimmed or tinted on stderr, which is what separates
-// the two visually.
-//
-// Honours https://no-color.org, FORCE_COLOR, TERM=dumb, and only colours a
-// stream that is actually a terminal.
+// ANSI styling for trusted display text. Sanitize untrusted text with the
+// helpers in terminal.ts BEFORE applying a palette, never after it.
+// Honours NO_COLOR, FORCE_COLOR and TERM. Answer rendering separately requires
+// stdout.isTTY so FORCE_COLOR cannot alter redirected model output.
 
 export interface ColourStream {
   readonly isTTY?: boolean | undefined;
