@@ -1,6 +1,6 @@
 {
   "name": "@codehaus-au/ask",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
   "keywords": [
     "llm",

@@ -1,0 +1,55 @@
+# Changelog
+
+## [0.2.0](https://github.com/codehausau/ask/compare/v0.1.0...v0.2.0) (2026-10-14)
+
+
+### Features
+
+* --write and --diff to edit a single attached file ([34d2277](https://github.com/codehausau/ask/commit/34d2277ac88c0b29932e03214c5b9e99c4e7ca99))
+* /compact summarises a thread into continuation notes ([6b99e45](https://github.com/codehausau/ask/commit/6b99e45ad859df195f8f1572ae69757910f43e15))
+* /create &lt;path&gt; writes a new file ([bb1b5c0](https://github.com/codehausau/ask/commit/bb1b5c09793a94cb234e44c2200800747af0b822))
+* /new archives the thread instead of deleting it ([68e1004](https://github.com/codehausau/ask/commit/68e10047579e79564f51f1a0a99da24fd943e41f))
+* /switch and /sessions for multiple threads per repository ([e8afffb](https://github.com/codehausau/ask/commit/e8afffb4160fa3793cd7fdc561477b7ef41936f2))
+* /write &lt;path&gt; names its target, and the picker lists directories ([e0b4e91](https://github.com/codehausau/ask/commit/e0b4e91fd72a6b31c83d5ef50d82cef59706f094))
+* /write and /diff as verbs ([0da02be](https://github.com/codehausau/ask/commit/0da02be890721a301f2fe135f47738d7b996dafa))
+* ask --install-completion sets up the shell safely ([d00d926](https://github.com/codehausau/ask/commit/d00d926349d6d011187e816d934399e5209a44c8))
+* ask — one-shot LLM CLI with file context, sessions and file editing ([f7991f8](https://github.com/codehausau/ask/commit/f7991f8480a80ec91551dc6504d9cbd59c5e88ac))
+* ASK_AT_KEY=1 opens the picker on typing @, no TAB needed ([722e007](https://github.com/codehausau/ask/commit/722e007e9a5711abd78b648234ed3d583b1e3a60))
+* automate versioning and publication with Release Please ([226ed46](https://github.com/codehausau/ask/commit/226ed469743b14d81b4df1fb84a6791092d98df7))
+* automate versioning and publication with Release Please ([6505c55](https://github.com/codehausau/ask/commit/6505c557d7778ad21da57e3127d66845777e36f2))
+* bash/zsh tab completion for [@paths](https://github.com/paths) and flags ([2aef1c0](https://github.com/codehausau/ask/commit/2aef1c0f20ecd57892721ebf7642002c2ef70670))
+* complete /verbs, including on an empty first word ([6e46f9a](https://github.com/codehausau/ask/commit/6e46f9a30817ef00d59adb8c493307a7bfdfa6ab))
+* dim the status output so the answer stands out ([00abfb0](https://github.com/codehausau/ask/commit/00abfb0472ff7e30b3b0ae938730d9283e6e6f91))
+* implicit sessions with /new, /reset and /session ([64ae562](https://github.com/codehausau/ask/commit/64ae562844c42929b7c020e5e790767909261422))
+* interactive fzf picker for @ completion ([1a0ea72](https://github.com/codehausau/ask/commit/1a0ea721329be53465ae7b82bf17282b8f9ab6ca))
+* nested and single-file skills ([266ca15](https://github.com/codehausau/ask/commit/266ca156335950d58297824e3d0a23750788d6e5))
+* no API key required for loopback endpoints (Ollama et al) ([ab3f3bb](https://github.com/codehausau/ask/commit/ab3f3bb4d7dbf89584ed584a3d08397cc394682c))
+* one-shot LLM CLI with file and directory context ([d50bda5](https://github.com/codehausau/ask/commit/d50bda5de53fe0888ef7e0aa916da77607b5d1da))
+* publish @codehaus-au/ask from release tags ([c919738](https://github.com/codehausau/ask/commit/c919738269a37066459b3969068ef4cedb23be9c))
+* render the answer as markdown on a terminal ([4b9ddbf](https://github.com/codehausau/ask/commit/4b9ddbfd6fe892ca1650d9d2520c83dbaefae2c1))
+* report token counts for the thread and the next request ([460413b](https://github.com/codehausau/ask/commit/460413b791778ba5046c5191609c68d1386849cc))
+* resolve [@ref](https://github.com/ref) as a path, a glob, or a ranked tree search ([271fd45](https://github.com/codehausau/ask/commit/271fd45a8376ff2f427195dc504e88ce4339a1c3))
+* skills — reusable SKILL.md instructions, selected by the CLI ([3036fdf](https://github.com/codehausau/ask/commit/3036fdfb93228d465e3e08c5371e1176d5f2ec3f))
+* spinner while a request is in flight ([1410c99](https://github.com/codehausau/ask/commit/1410c990589e50d70bb3caf86895d168ad5e2b9c))
+* suggest /write when a request reads like an edit ([a11eb8e](https://github.com/codehausau/ask/commit/a11eb8e84956c63b0550a336ec62382380af643b))
+* TAB accepts in the fzf picker, as ENTER does ([c66b854](https://github.com/codehausau/ask/commit/c66b85427628a0621d65e30b2ceaa70a1f96d6d2))
+* tell the model it is one-shot, and suggest the next command ([7b3f113](https://github.com/codehausau/ask/commit/7b3f113bf0fbbe56818151d2e07eb9736b9f47cb))
+
+
+### Bug Fixes
+
+* accept [@path](https://github.com/path) after /write, and give each verb its own error ([7b6a4d6](https://github.com/codehausau/ask/commit/7b6a4d672b94567e2798ea22d820d20b404e0d53))
+* accept npm 11 publish reports in package tests ([f5b3c62](https://github.com/codehausau/ask/commit/f5b3c62ffffe02f1cbace126608dd12a43c8ee24))
+* find skills in ancestor directories, and nested deeper than three levels ([8770997](https://github.com/codehausau/ask/commit/87709978fc1661a890ad0b86ef3d3a628022733e))
+* give Dependabot a cooldown, and audit .github/ not just workflows/ ([f6f06d0](https://github.com/codehausau/ask/commit/f6f06d0d1e5156f82c37202a0c1ac5d0b44430df))
+* harden CLI trust boundaries and file operations ([bd6fcc9](https://github.com/codehausau/ask/commit/bd6fcc94cd54fab6b0c84c845bc8ef3649b5c62c))
+* load .env without process.loadEnvFile, and explain when a key is missing ([1f76df7](https://github.com/codehausau/ask/commit/1f76df77c48045c9ec72b991e1138e611c1c527f))
+* make [@search](https://github.com/search) work in large repos and report truncation honestly ([3ab5be3](https://github.com/codehausau/ask/commit/3ab5be3310478de7e7047767cba5555663ea3c3d))
+* pin actions to commit SHAs, not annotated tag object SHAs ([b2edb54](https://github.com/codehausau/ask/commit/b2edb545d6af1521ca32cfe8b12fc2b42a6615ba))
+* prepack builds, so a published tarball cannot be codeless ([275080f](https://github.com/codehausau/ask/commit/275080f209a7d3c9c10658e449a82981799f995e))
+* references containing spaces, and explain unattachable documents ([b0f3b68](https://github.com/codehausau/ask/commit/b0f3b685aaf93b59bc338452a728590697127fe0))
+* resolve the ten CodeQL alerts ([3655ec7](https://github.com/codehausau/ask/commit/3655ec7d5cd8b192eea04afb2a67e82305c90380))
+* the release workflow could never have published ([230d783](https://github.com/codehausau/ask/commit/230d7837d82f2c866a1345e734b791e7777d2c15))
+* the security workflow's zizmor job was failing on every push ([f772a03](https://github.com/codehausau/ask/commit/f772a030139085da0f9de9b7ea1ab1dff739ee49))
+* three rendering defects in real answers ([9b7a399](https://github.com/codehausau/ask/commit/9b7a399e4f6a6fb6b8f1050998e9f066a0c1b7e8))
+* validate opened files before hashing Git worktree content ([849e73b](https://github.com/codehausau/ask/commit/849e73b336d7765b9c5af4cfaf88c8b97c70ed61))
