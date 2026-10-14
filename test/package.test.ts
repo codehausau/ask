@@ -81,7 +81,10 @@ test("the npm tarball contains the runnable CLI and completions, without source/
   const dryRun = await run("npm", [
     "publish", tarball, "--dry-run", "--ignore-scripts", "--provenance=false", "--access", "public", "--json",
   ], { cwd: base, env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
-  const publish = JSON.parse(dryRun.stdout) as { name: string; version: string };
-  assert.equal(publish.name, manifest.name);
+  // npm 10 emits metadata directly; newer npm emits a package-name-keyed report.
+  // Node 20/22 and Node 24 ship different npm versions in the CI matrix.
+  const report = JSON.parse(dryRun.stdout) as Record<string, unknown>;
+  const publish = (report[manifest.name] ?? report) as { name: string; version: string };
+  assert.equal(publish.name, manifest.name, `unexpected npm publish report: ${dryRun.stdout}`);
   assert.equal(publish.version, manifest.version);
 });
