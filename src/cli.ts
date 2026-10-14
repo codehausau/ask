@@ -222,7 +222,7 @@ async function readVersion(): Promise<string> {
     try {
       const raw = await readFile(new URL(candidate, import.meta.url), "utf8");
       const parsed = JSON.parse(raw) as { name?: string; version?: string };
-      if (parsed.name === "@codehaus/ask" && parsed.version) return parsed.version;
+      if (parsed.name === "@codehaus-au/ask" && parsed.version) return parsed.version;
     } catch {
       // try the next candidate
     }

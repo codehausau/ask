@@ -35,6 +35,22 @@ JSON body) or `--show-context` (attachment list + token estimate, no API call).
 
 ## Install
 
+Requires Node.js 20 or newer. Install the published CLI from npm:
+
+```bash
+npm install --global @codehaus-au/ask
+ask --version
+ask --help
+```
+
+Update a registry installation with:
+
+```bash
+npm install --global @codehaus-au/ask@latest
+```
+
+For development, build a source checkout instead:
+
 ```bash
 git clone git@github.com:codehausau/ask.git
 cd ask
@@ -75,7 +91,7 @@ Or straight from a release, no toolchain required:
 ```bash
 VERSION=0.1.0
 npm install --global \
-  "https://github.com/codehausau/ask/releases/download/v$VERSION/codehaus-ask-$VERSION.tgz"
+  "https://github.com/codehausau/ask/releases/download/v$VERSION/codehaus-au-ask-$VERSION.tgz"
 ```
 
 ### Make a source checkout available as `ask`
@@ -962,11 +978,11 @@ npm deps and those SHA pins current.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | push, PR | `tsc --noEmit`; shellcheck on the completion script; tests on Node 20/22/24; `--dry-run` / `--show-context` (no key, no egress); packs the tarball, installs it globally and runs `ask --version` |
+| [`ci.yml`](.github/workflows/ci.yml) | push, PR | `tsc --noEmit`; shellcheck on the completion script; tests on Node 20/22/24; offline CLI previews; packs and installs the tarball, verifies its version/completions, and runs an npm publish dry-run |
 | [`security.yml`](.github/workflows/security.yml) | push, PR, weekly | `pnpm audit` (runtime blocking, dev advisory); dependency review on PRs; Trivy vulns + secrets + misconfig; TruffleHog over full git history; actionlint + zizmor on these workflows; CycloneDX SBOM artifact |
 | [`codeql.yml`](.github/workflows/codeql.yml) | push, PR, weekly | CodeQL `security-extended` for javascript-typescript |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | weekly, branch protection changes | OpenSSF Scorecard (public repos only; guarded by a visibility check) |
-| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` | typecheck, test, audit, tag/version match check, pack, verify the tarball installs, SBOM, signed build-provenance attestation, GitHub Release via `gh` |
+| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*`; manual validation | typecheck, test, audit, tag/version match check, pack and test one tarball, npm dry-run, SBOM, GitHub attestation, npm publication with provenance, then GitHub Release with the same tarball |
 
 Run the same gates locally:
 
@@ -991,11 +1007,61 @@ Two deliberate choices worth knowing about:
   cannot reach a published artifact (flagged by zizmor's `cache-poisoning`
   audit).
 
-Cut a release:
+### npm publishing setup
+
+The npm package is **`@codehaus-au/ask`**; the GitHub repository remains
+`codehausau/ask`. The publishing account must have access to the npm `codehaus-au`
+scope, including permission to create this package for the first release.
+
+Create a **granular npm access token** with read/write package access for that
+scope and **Bypass 2FA** enabled for unattended publishing. Store it in this
+repository under **Settings → Secrets and variables → Actions → New repository
+secret**, named **`NPM_TOKEN`**. Keep it out of `.env` and version control, and
+renew the secret before the token expires. An npm token is not an OpenAI API key.
+
+The workflow exposes that secret as `NODE_AUTH_TOKEN` only in the npm publishing
+step. `actions/setup-node` configures npm registry authentication, and the existing
+`id-token: write` permission supplies the identity for npm provenance. Publishing
+uses the already tested tarball with lifecycle scripts disabled; it does not
+rebuild the package while the token is available.
+
+### Cut a release
+
+After merging the publishing changes into `main`, run from an up-to-date checkout:
 
 ```bash
-pnpm version patch && git push --follow-tags
+git switch main
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm check
+pnpm version patch
+git push origin main --follow-tags
 ```
+
+The tag must match `package.json` exactly (`v` followed by its version). Stable
+versions publish to npm's `latest` dist-tag; prereleases such as `0.2.0-beta.1`
+publish to `next`. npm versions are immutable: use a new version for changed
+package contents. The workflow publishes to npm first, then creates the GitHub
+Release with the verified tarball and SBOM. If npm publication succeeds but a
+later GitHub Release step fails, complete that release using the published
+artifact rather than attempting to overwrite the npm version.
+
+Manual dispatch on a branch runs validation, packing and the dry-run without
+publishing. Manual dispatch on a version tag also attempts publication, so use
+it only when that npm version has not already been published. The `NPM_TOKEN`
+secret is not required for branch validation or local tests.
+
+To inspect a local package without uploading it:
+
+```bash
+pnpm pack --pack-destination dist-release
+npm publish ./dist-release/codehaus-au-ask-0.1.0.tgz \
+  --dry-run --ignore-scripts --provenance=false --access public
+```
+
+Use the filename printed by `pnpm pack` for the current version. The local
+dry-run validates packaging and npm metadata, not registry permissions or CI
+provenance signing; the tagged GitHub Actions run performs those operations.
 
 ## Cost note
 
