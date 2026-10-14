@@ -79,17 +79,37 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Pack
-        run: pnpm pack --pack-destination "$RUNNER_TEMP"
+        id: pack
+        run: |
+          set -euo pipefail
+          directory=$(mktemp -d "$RUNNER_TEMP/ask-package.XXXXXX")
+          pnpm pack --pack-destination "$directory"
+          tarballs=("$directory"/*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
+            echo 'Expected exactly one packed tarball' >&2
+            exit 1
+          fi
+          {
+            echo "tarball=${tarballs[0]}"
+            echo "version=$(node -p "require('./package.json').version")"
+          } >> "$GITHUB_OUTPUT"
       - name: Install the tarball globally and run it
         working-directory: ${{ runner.temp }}
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          EXPECTED_VERSION: ${{ steps.pack.outputs.version }}
         # Installing our own freshly packed tarball is the point of this job,
         # so the lack of a lockfile here is intentional.
         # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
-          tarball=$(ls ./*.tgz)
-          npm install --global "$tarball"
-          ask --version
+          npm install --global --ignore-scripts "$TARBALL"
+          test "$(ask --version)" = "ask $EXPECTED_VERSION"
           ask --help > /dev/null
+          ask --install-completion > /dev/null
           echo 'const x = 1;' > sample.ts
-          ask --show-context '@sample.ts'
+          ask --no-session --show-context '@sample.ts' </dev/null
+      - name: Verify npm publish metadata without uploading
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --dry-run --ignore-scripts --provenance=false --access public --registry https://registry.npmjs.org

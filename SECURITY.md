@@ -239,6 +239,13 @@ gitignored. The key is only ever sent to the configured endpoint as an
 
 ## Supply chain
 
+- `@codehaus-au/ask` is published to npm from version-tagged GitHub Actions runs.
+  The granular `NPM_TOKEN` repository secret is mapped to `NODE_AUTH_TOKEN` only
+  for publishing the already built and installation-tested tarball. Lifecycle
+  scripts are disabled in that step, the destination registry is explicit, and
+  npm provenance is generated using the job's OIDC permission. The same tarball
+  is attached to the GitHub Release. Manual runs on branches perform validation
+  and a dry-run without an npm publishing secret; version-tagged runs may publish.
 - Two runtime dependencies, pinned by `pnpm-lock.yaml`: `openai` (the official
   SDK) and `marked` (markdown parsing for terminal rendering, itself
   dependency-free). Neither has transitive dependencies, so the whole tree is

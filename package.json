@@ -1,7 +1,6 @@
 {
-  "name": "@codehaus/ask",
+  "name": "@codehaus-au/ask",
   "version": "0.1.0",
-  "private": true,
   "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
   "keywords": [
     "llm",
@@ -11,9 +10,14 @@
     "code-review"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/codehausau/ask.git"
+    "url": "git+https://github.com/codehausau/ask.git"
   },
   "bugs": {
     "url": "https://github.com/codehausau/ask/issues"
