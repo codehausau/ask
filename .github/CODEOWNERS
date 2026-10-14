@@ -1,0 +1,6 @@
+# Default reviewer for everything, including the CI/CD and security config.
+*                       @codehausau/maintainers
+
+# Changes to the workflows or security posture deserve a deliberate look.
+/.github/               @codehausau/maintainers
+/SECURITY.md            @codehausau/maintainers
