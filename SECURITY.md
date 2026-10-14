@@ -239,6 +239,12 @@ gitignored. The key is only ever sent to the configured endpoint as an
 
 ## Supply chain
 
+- Release Please uses the built-in `GITHUB_TOKEN` to maintain a version/changelog
+  PR on `main`. Merging that PR creates the version tag and GitHub Release. A
+  separate job with `actions: write` explicitly dispatches publication at that
+  tag; it has no npm token. The GitHub Release exists before npm publication, so
+  the tagged publication workflow's result determines whether publication and
+  artifact upload completed.
 - `@codehaus-au/ask` is published to npm from version-tagged GitHub Actions runs.
   The granular `NPM_TOKEN` repository secret is mapped to `NODE_AUTH_TOKEN` only
   for publishing the already built and installation-tested tarball. Lifecycle
