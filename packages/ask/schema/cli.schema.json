@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/codehausau/ask/main/packages/ask/schema/cli.schema.json",
+  "title": "cli.json",
+  "description": "Settings used only by the ask CLI. Layered like ask.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "sessionMaxTokens": {
+      "description": "Prune the oldest session turns past this estimated token budget (also --session-max-tokens). Default 32000.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "sessionTtlMinutes": {
+      "description": "Idle minutes after which the implicit session starts a fresh thread instead of resending old history (also ASK_SESSION_TTL). 0 never expires. Default 120.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "next": {
+      "description": "Suggest a follow-up command after an answer (also ASK_NEXT, --no-next). Default true.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "spinner": {
+      "description": "The waiting animation on stderr (also ASK_SPINNER): auto shows it only at a terminal outside CI, off never, ascii forces ASCII frames. Default auto.",
+      "enum": [
+        "auto",
+        "off",
+        "ascii",
+        null
+      ]
+    }
+  }
+}

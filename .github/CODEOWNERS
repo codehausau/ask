@@ -3,4 +3,4 @@
 
 # Changes to the workflows or security posture deserve a deliberate look.
 /.github/               @codehausau/maintainers
-/SECURITY.md            @codehausau/maintainers
+/SECURITY.md             @codehausau/maintainers

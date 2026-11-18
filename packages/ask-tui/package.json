@@ -1,0 +1,58 @@
+{
+  "name": "@codehaus-au/ask-tui",
+  "version": "0.2.0",
+  "description": "Interactive terminal chat for ask: attach files with @, one logical completion per message, suggested edits applied only after diff review. No tools, no agent loop.",
+  "keywords": [
+    "llm",
+    "cli",
+    "tui",
+    "openai",
+    "opentui"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codehausau/ask.git",
+    "directory": "packages/ask-tui"
+  },
+  "bugs": {
+    "url": "https://github.com/codehausau/ask/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ask-tui": "dist/src/launcher.js"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.3.14"
+  },
+  "files": [
+    "dist/src",
+    "schema",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc && cp src/bunfig.toml dist/src/bunfig.toml && chmod +x dist/src/launcher.js",
+    "prepack": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --import ./dist/test/isolate-config.js --test dist/test/*.test.js",
+    "test:bun": "pnpm build && bun test --preload ./test/isolate-config.ts ./test/bun",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@codehaus-au/ask": "workspace:*",
+    "@opentui/core": "^0.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "marked": "^18.0.14",
+    "openai": "^7.23.0",
+    "typescript": "^7.0.2"
+  }
+}

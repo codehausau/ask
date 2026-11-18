@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/codehausau/ask/main/packages/ask/schema/tui.schema.json",
+  "title": "tui.json",
+  "description": "Settings used only by ask-tui. Layered like ask.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "theme": { "description": "Starting theme: ask, a bundled theme such as dracula, or a custom themes/<name>.json (also ASK_THEME, --theme).", "type": ["string", "null"] },
+    "contextWindow": { "description": "The model's context capacity in tokens (also ASK_CONTEXT_WINDOW, --context-window). When set, the oldest history is dropped so each request fits.", "type": ["integer", "null"], "minimum": 1 },
+    "mouse": { "description": "Use mouse selection and scrolling in the TUI (--no-mouse sets false). Default true.", "type": ["boolean", "null"] },
+    "updateView": { "description": "Initial presentation of response update blocks. Default diff; click a valid block header to toggle between the full-file diff and SEARCH/REPLACE. Approval still requires Review or /review, then Apply or /apply.", "enum": ["search-replace", "diff", null] }
+  }
+}

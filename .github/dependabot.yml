@@ -1,8 +1,9 @@
 version: 2
 
 updates:
-  # Runtime and dev dependencies. openai is the only runtime dep, so a PR here
-  # is worth reading rather than auto-merging.
+  # Runtime and dev dependencies for both workspace packages (one root lockfile).
+  # Runtime deps are few and security-relevant, so read these PRs rather than
+  # auto-merging them.
   - package-ecosystem: npm
     directory: /
     # Wait before adopting a freshly published version: a compromised release is

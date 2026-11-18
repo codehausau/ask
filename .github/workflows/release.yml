@@ -1,17 +1,25 @@
 name: release
 
-# CD: Release Please dispatches this workflow at its new version tag. Verify one
-# tarball, publish it to npm with provenance, then attach it and its SBOM to the
-# existing GitHub Release. Direct tag pushes and manual validation also work.
+# CD: Release Please dispatches this workflow once per package at its new version
+# tag (v<version> for ask, ask-tui-v<version> for ask-tui). Verify one tarball, publish it to npm
+# with provenance, then attach it and its SBOM to the existing GitHub Release.
+# Direct tag pushes and manual validation also work.
 # Requires the repository Actions secret NPM_TOKEN (granular publish token).
 #
 # Install from a release:
 #   npm install --global @codehaus-au/ask
+#   npm install --global @codehaus-au/ask-tui
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["v*.*.*", "ask-tui-v*.*.*"]
   workflow_dispatch:
+    inputs:
+      package:
+        description: Package to validate when dispatched on a branch (a tag selects its own package)
+        type: choice
+        options: [ask, ask-tui]
+        default: ask
 
 permissions: {}
 
@@ -22,7 +30,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write # create the release
       id-token: write # npm provenance and GitHub build-provenance attestation
@@ -40,43 +48,75 @@ jobs:
           # entry could otherwise end up inside a released artifact.
           package-manager-cache: false
 
-      - run: pnpm install --frozen-lockfile
-
-      # Never ship something that does not typecheck or pass its tests.
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm audit --audit-level high --prod
-
-      - name: Check the tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/v')
+      # A release tag names its package; a branch dispatch uses the input.
+      - name: Select the package
+        id: select
+        env:
+          INPUT_PACKAGE: ${{ inputs.package }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          pkg=$(node -p "require('./package.json').version")
-          if [ "$tag" != "$pkg" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+          case "$GITHUB_REF_TYPE:$GITHUB_REF_NAME" in
+            tag:ask-tui-v*) package=ask-tui; tag_version="${GITHUB_REF_NAME#ask-tui-v}" ;;
+            tag:v*) package=ask; tag_version="${GITHUB_REF_NAME#v}" ;;
+            tag:*) echo "unrecognised release tag $GITHUB_REF_NAME" >&2; exit 1 ;;
+            *) package="${INPUT_PACKAGE:-ask}"; tag_version= ;;
+          esac
+          case "$package" in ask|ask-tui) ;; *) echo "unknown package $package" >&2; exit 1 ;; esac
+          version=$(node -p "require('./packages/$package/package.json').version")
+          if [ -n "$tag_version" ] && [ "$tag_version" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match packages/$package/package.json version $version" >&2
             exit 1
           fi
+          core_version=$(node -p "require('./packages/ask/package.json').version")
+          if [ "$core_version" != "$version" ]; then
+            echo "ask $core_version and ask-tui $version must be released at the same version" >&2
+            exit 1
+          fi
+          {
+            echo "package=$package"
+            echo "directory=packages/$package"
+            echo "version=$version"
+            echo "dist-tag=$(node -p "/^[0-9]+\\.[0-9]+\\.[0-9]+-/.test('$version') ? 'next' : 'latest'")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.select.outputs.package == 'ask-tui'
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+
+      - run: pnpm install --frozen-lockfile
+
+      # Never ship something that does not typecheck or pass its tests. Both
+      # packages are checked: they are released together from the same commit.
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:bun
+        if: steps.select.outputs.package == 'ask-tui'
+      - run: pnpm audit --audit-level high --prod
 
       # prepack builds too, but stating it here keeps the order obvious.
       - run: pnpm build
 
       - name: Pack
         id: pack
+        env:
+          PACKAGE: ${{ steps.select.outputs.package }}
+          VERSION: ${{ steps.select.outputs.version }}
         run: |
           set -euo pipefail
           directory=$(mktemp -d "$RUNNER_TEMP/ask-release.XXXXXX")
-          pnpm pack --pack-destination "$directory"
+          # pnpm (not npm) rewrites ask-tui's workspace:* dependency to the exact version.
+          pnpm --dir "packages/$PACKAGE" pack --pack-destination "$directory"
           tarballs=("$directory"/*.tgz)
           if [ "${#tarballs[@]}" -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
             echo 'Expected exactly one packed tarball' >&2
             exit 1
           fi
+          test "${tarballs[0]}" = "$directory/codehaus-au-$PACKAGE-$VERSION.tgz"
           {
             echo "tarball=${tarballs[0]}"
             echo "directory=$directory"
-            echo "version=$(node -p "require('./package.json').version")"
-            echo "dist-tag=$(node -p "/^[0-9]+\\.[0-9]+\\.[0-9]+-/.test(require('./package.json').version) ? 'next' : 'latest'")"
           } >> "$GITHUB_OUTPUT"
 
       # Installing our own freshly built tarball is the point of this step, so
@@ -86,11 +126,12 @@ jobs:
       # --global <tarball>` from inside the package's own root hangs
       # indefinitely, which is what failed the first tagged release while the
       # identical check in ci.yml passed — that one already ran in RUNNER_TEMP.
-      - name: Verify the tarball installs and runs
+      - name: Verify the core tarball installs and runs
+        if: steps.select.outputs.package == 'ask'
         working-directory: ${{ runner.temp }}
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          EXPECTED_VERSION: ${{ steps.pack.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.select.outputs.version }}
         # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
@@ -101,18 +142,39 @@ jobs:
           printf 'export const sample = 1;\n' > "$RUNNER_TEMP/ask-release-sample.ts"
           ask --no-session --show-context --file "$RUNNER_TEMP/ask-release-sample.ts" </dev/null
 
+      # The TUI pins the exact core version, which may not be on npm yet. Pack core
+      # from this same commit and install both into one project to satisfy it.
+      - name: Verify the TUI tarball installs and runs
+        if: steps.select.outputs.package == 'ask-tui'
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          VERSION: ${{ steps.select.outputs.version }}
+        # zizmor: ignore[adhoc-packages]
+        run: |
+          set -euo pipefail
+          core=$(mktemp -d "$RUNNER_TEMP/ask-core.XXXXXX")
+          pnpm --dir packages/ask pack --pack-destination "$core"
+          project=$(mktemp -d "$RUNNER_TEMP/ask-tui-install.XXXXXX")
+          echo '{"private":true}' > "$project/package.json"
+          npm install --prefix "$project" --no-save --ignore-scripts --no-audit --no-fund \
+            "$core/codehaus-au-ask-$VERSION.tgz" "$TARBALL"
+          launcher="$project/node_modules/.bin/ask-tui"
+          "$launcher" --help > /dev/null
+          python3 packages/ask-tui/test/package-smoke.py "$launcher"
+
       - name: Check npm publication without uploading
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          DIST_TAG: ${{ steps.pack.outputs.dist-tag }}
+          DIST_TAG: ${{ steps.select.outputs.dist-tag }}
         run: npm publish "$TARBALL" --dry-run --ignore-scripts --provenance=false --access public --tag "$DIST_TAG" --registry https://registry.npmjs.org
 
+      # Scans the workspace lockfile, so the SBOM covers both packages' trees.
       - name: SBOM for the release artifact
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
           format: cyclonedx-json
-          artifact-name: sbom.cyclonedx.json
+          artifact-name: sbom-${{ steps.select.outputs.package }}.cyclonedx.json
           output-file: ${{ steps.pack.outputs.directory }}/sbom.cyclonedx.json
           # Upload both release assets together only after npm publication.
           upload-release-assets: false
@@ -122,12 +184,29 @@ jobs:
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
+      # Release Please dispatches both packages at once. The TUI's exact core
+      # dependency must be installable before the TUI is, so wait for it.
+      - name: Wait for the matching core version on npm
+        if: github.ref_type == 'tag' && steps.select.outputs.package == 'ask-tui'
+        env:
+          VERSION: ${{ steps.select.outputs.version }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 40); do
+            if [ "$(npm view "@codehaus-au/ask@$VERSION" version --registry https://registry.npmjs.org 2>/dev/null)" = "$VERSION" ]; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "@codehaus-au/ask@$VERSION is not on npm after 20 minutes; check the v$VERSION release run, then re-dispatch this one." >&2
+          exit 1
+
       - name: Publish the verified tarball to npm
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref_type == 'tag'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          DIST_TAG: ${{ steps.pack.outputs.dist-tag }}
+          DIST_TAG: ${{ steps.select.outputs.dist-tag }}
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
@@ -140,7 +219,7 @@ jobs:
       # `gh` ships with the runner, so the release path pulls in no third-party
       # action beyond the ones already needed to build.
       - name: Attach artifacts to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ steps.pack.outputs.tarball }}

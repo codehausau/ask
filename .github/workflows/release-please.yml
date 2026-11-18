@@ -1,7 +1,9 @@
 name: release-please
 
-# Merges to main update a release PR. Merging that PR creates the version tag
-# and GitHub Release, then explicitly dispatches the tagged npm publication.
+# Merges to main update one release PR for both packages, which share a version
+# (linked-versions). Merging it creates a v<version> tag (core, continuing the
+# single-package tags) and an ask-tui-v<version> tag, each with a GitHub Release,
+# then explicitly dispatches tagged npm publication for each, core first.
 on:
   push:
     branches: [main]
@@ -23,8 +25,9 @@ jobs:
       issues: write # release labels
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      core_tag: ${{ steps.release.outputs['packages/ask--tag_name'] }}
+      tui_tag: ${{ steps.release.outputs['packages/ask-tui--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
@@ -35,7 +38,7 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -43,12 +46,18 @@ jobs:
       contents: read
     steps:
       # A tag created with GITHUB_TOKEN does not trigger a push workflow. Dispatch
-      # at the tag so checkout, the version guard, and provenance use that ref.
-      - name: Start publication at the new release tag
+      # at each tag so checkout, the version guard, and provenance use that ref.
+      # The ask-tui run waits for the core version to reach npm before publishing.
+      - name: Start publication at the new release tags
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          CORE_TAG: ${{ needs.release-please.outputs.core_tag }}
+          TUI_TAG: ${{ needs.release-please.outputs.tui_tag }}
         run: |
           set -euo pipefail
-          test -n "$RELEASE_TAG"
-          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
+          test -n "$CORE_TAG$TUI_TAG"
+          for tag in "$CORE_TAG" "$TUI_TAG"; do
+            if [ -n "$tag" ]; then
+              gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+            fi
+          done
