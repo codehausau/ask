@@ -865,6 +865,13 @@ ask /compact          # summarise the thread into notes, files stay attached
 
 ### `/clear` keeps the context
 
+Named threads also work in `ask-tui`: enter `/switch work`, ask a question,
+then resume it with `ask --session work 'follow up'`. Paths are retained
+relative to the repository root; changing subdirectories does not select a
+different file. Exclusions and removed skills stay removed. `/switch work` and
+explicit `--session work` resume idle history; the TTL still applies to implicit
+CLI use. Piped CLI requests still need `--session` to read or write a thread.
+
 `/clear` removes the current thread's questions, answers and usage totals while
 keeping its attached references and selected skills. It makes no model request
 unless you also supply a prompt. Files and skills are re-read on the next question,
@@ -997,7 +1004,7 @@ $ ask /compact
 - open: whether .tmp should be configurable
 
 -- compacted 9 turn(s): ~8400 → ~180 tokens of history
--- 2 file(s) stay attached; previous thread kept at .../sessions/<id>.pre-compact.json
+-- 2 file(s) stay attached; previous thread kept at .../sessions-v2/<id>.pre-compact.json
 ```
 
 - **Still one logical completion per invocation.** `/compact` *is* the request; nothing is

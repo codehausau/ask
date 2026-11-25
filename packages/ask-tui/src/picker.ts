@@ -13,6 +13,8 @@ export const SLASH_COMMANDS = [
   { value: "/theme", description: "Choose a color theme (saved as your default)" },
   { value: "/clear", description: "Clear conversation and pending edits; keep attachments and skills" },
   { value: "/new", description: "Clear conversation, attachments and skills" },
+  { value: "/sessions", description: "List saved threads for this project" },
+  { value: "/switch", description: "Save or resume a named thread" },
   { value: "/help", description: "Show commands and keyboard shortcuts" },
   { value: "/quit", description: "Exit the TUI" },
   { value: "/exit", description: "Exit the TUI (alias of /quit)" },

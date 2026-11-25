@@ -445,11 +445,21 @@ Safety rules:
   names any files already written. Review your diffs and keep backups/commits.
 
 This initial TUI supports updates to existing files only. Use `ask /create` for
-new files. It has **in-memory history only** (separate from CLI sessions), no
-compaction, no streaming, no model tools, and no model-driven follow-ups.
+new files. The TUI starts temporary. `/sessions` lists saved threads in this
+repository; `/switch work` resumes the same thread as `ask --session work`.
+Switch to an unused name to save a temporary conversation. To open an existing
+thread instead, first save or discard nonempty temporary work. After selection,
+turns and context changes are saved locally; old answers have no Apply controls.
+Switches cannot apply pending edits: resolve them before switching.
+
+With the composer focused, press **Up** for your last prompt, then older prompts
+from this thread. **Down** moves forward and restores your original draft.
+Edit the recalled text and press Enter to submit. Arrows navigate an open
+picker first, and move between rows of multiline input before browsing history.
 `/clear` clears history, the visible transcript, pending edits and conversation
 usage counters, while keeping attachments, file exclusions, active skills and
-settings. `/new` also removes attachments, exclusions and skills. Both destroy
+settings. In a named thread `/clear` also clears saved history. `/new` leaves
+a named thread intact and starts a temporary chat with no selections. Both destroy
 the cleared transcript's native renderables and keep the selected theme and sidebar
 width for the current run. `/context`
 opens the context manager; `/help` lists commands; `/quit` or Ctrl+D exits.

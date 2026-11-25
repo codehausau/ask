@@ -250,10 +250,10 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
       let message: string;
       if (item.kind === "skill") {
         const active = chat.activeSkillNames.includes(item.value);
-        if (active) chat.removeSkill(item.value); else await chat.selectSkills([item.value]);
+        if (active) await chat.removeSkill(item.value); else await chat.selectSkills([item.value]);
         message = `${active ? "Disabled" : "Enabled"} skill ${terminalField(item.value)}. Instructions only; no scripts are executed.`;
       } else if (fileIsAttached(item.value)) {
-        chat.detach(item.value.replace(/\/$/, "")); message = `Detached ${terminalField(item.value)} from future file context.`;
+        await chat.detach(item.value.replace(/\/$/, "")); message = `Detached ${terminalField(item.value)} from future file context.`;
       } else {
         const context = await chat.attach(item.value.replace(/\/$/, ""));
         message = `Attached ${terminalField(item.value)} · ${context.blocks.length} file(s) · ${context.skipped.length} skipped${context.truncated ? " · context truncated" : ""}`;
@@ -266,12 +266,15 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
       if (state.alive) { actions.refreshSummary(); refresh(); }
     }
   }
-  function accept(run: boolean) {
+  async function accept(run: boolean) {
     if (state.working) return;
     const item = matches[selected];
     if (!item) return;
     if (item.kind === "mention") { completeMention(); return; }
     if (item.kind === "command") {
+      if (item.value === "/switch") {
+        input.setText("/switch "); input.gotoBufferEnd(); picker.visible = false; return;
+      }
       if (["/context", "/attach", "/detach", "/unskill", "/skill", "/skills", "/theme"].includes(item.value)) {
         openManager(item.value.slice(1) as ManagerMode); return;
       }
@@ -290,12 +293,13 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
     if (item.kind === "open-skills") { openManager("skills"); return; }
     if (item.kind === "open-files") { openManager("attach"); return; }
     if (item.kind === "skill") { void toggle(item); return; }
+    state.working = true;
     try {
-      if (item.kind === "detach") { chat.detach(item.value); status.content = `Removed ${terminalField(item.value)} from future file context.`; }
-      else if (item.kind === "unskill") { chat.removeSkill(item.value); status.content = `Removed skill ${terminalField(item.value)}.`; }
-      else if (item.kind === "restore") { chat.restoreFile(item.value); status.content = `Restored ${terminalField(item.value)} for the next request.`; }
-      actions.refreshSummary(); refresh();
-    } catch (error) { status.content = terminalField(error instanceof Error ? error.message : String(error)); }
+      if (item.kind === "detach") { await chat.detach(item.value); if (state.alive) status.content = `Removed ${terminalField(item.value)} from future file context.`; }
+      else if (item.kind === "unskill") { await chat.removeSkill(item.value); if (state.alive) status.content = `Removed skill ${terminalField(item.value)}.`; }
+      else if (item.kind === "restore") { await chat.restoreFile(item.value); if (state.alive) status.content = `Restored ${terminalField(item.value)} for the next request.`; }
+    } catch (error) { if (state.alive) status.content = terminalField(error instanceof Error ? error.message : String(error)); }
+    finally { state.working = false; if (state.alive) { actions.refreshSummary(); refresh(); } }
   }
 
   picker.onMouseScroll = (event) => {
@@ -307,6 +311,7 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
   };
   return {
     refresh, openManager,
+    dismiss() { dismissedAt = input.editBuffer.getTextRange(0, input.cursorOffset); picker.visible = false; matches = []; },
     contentChanged() { dismissedAt = ""; refresh(); },
     get loadingSkills() { return loadingSkills; },
     get loadingCandidates() { return loadingCandidates; },
@@ -327,7 +332,7 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
       } else if (matches.length && (key.name === "up" || key.name === "down")) {
         key.preventDefault(); selected = (selected + (key.name === "up" ? -1 : 1) + matches.length) % matches.length; paint();
       } else if (matches.length && (key.name === "tab" || (key.name === "return" && !key.shift && !key.ctrl && !key.meta))) {
-        key.preventDefault(); accept(key.name === "return");
+        key.preventDefault(); void accept(key.name === "return");
       }
     },
     setCandidates, setIndexError,

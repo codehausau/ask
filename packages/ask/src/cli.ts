@@ -75,7 +75,7 @@ import {
   WRITE_SYSTEM,
 } from "./write.ts";
 import { OPTIONS, VERBS, VERBS_WITH_VALUE } from "./options.ts";
-import { RefResolutionError, repairSpacedRefs, resolveRef } from "./refs.ts";
+import { RefResolutionError, repairSpacedRefs } from "./refs.ts";
 import {
   appendTurn,
   applyCompaction,
@@ -85,7 +85,7 @@ import {
   listSessions,
   resolveSessionName,
   writeCurrentSession,
-  backupSession,
+  commitThread, readThread, scopedPath, sessionBackupPath,
   buildCompactionPrompt,
   COMPACT_SYSTEM,
   DEFAULT_SESSION_MAX_TOKENS,
@@ -94,12 +94,10 @@ import {
   loadSession,
   pruneSession,
   resetSession,
-  saveSession,
   sessionLabel,
   sessionMessages,
   sessionPath,
   sessionRefs,
-  sessionScope,
   sessionSkills,
   sessionTokens,
   sessionUsage,
@@ -794,7 +792,7 @@ async function main(argv: string[]): Promise<number> {
     bool("list-sessions") ||
     bool("compact") ||
     switchTo !== undefined;
-  const scope = needsScope ? await sessionScope(process.cwd()) : process.cwd();
+  const scope = needsScope ? loaded.projectRoot : process.cwd();
 
   if (bool("clear") && (bool("new") || bool("reset") || bool("compact"))) {
     throw new UsageError("/clear cannot be combined with /new, /reset or /compact");
@@ -806,8 +804,10 @@ async function main(argv: string[]): Promise<number> {
         `invalid thread name "${terminalField(switchTo)}": letters, digits, dot, dash, underscore`,
       );
     }
+    const key = { scope, name: switchTo };
+    const { session: target, revision } = await readThread(key);
+    if (target) await commitThread(key, { ...target, updatedAt: new Date().toISOString() }, revision);
     await writeCurrentSession(scope, switchTo);
-    const target = await loadSession({ scope, name: switchTo }, sessionTtlMs());
     status.note(
       target
         ? `-- switched to thread ${switchTo} (${target.turns.length} turn(s))`
@@ -817,6 +817,7 @@ async function main(argv: string[]): Promise<number> {
 
   const sessionName = await resolveSessionName(scope, flag("session"));
   const sessionKey = { scope, name: sessionName };
+  const ttl = flag("session") !== undefined ? 0 : sessionTtlMs();
 
   if (bool("list-sessions")) {
     await printSessions(scope, sessionName, colour);
@@ -832,10 +833,10 @@ async function main(argv: string[]): Promise<number> {
 
   // /new files the thread away and starts fresh; /reset throws it away.
   if (bool("new") || bool("reset")) {
-    const current = sessionsDisabled ? null : await loadSession(sessionKey, 0);
+    const { session: current, revision } = sessionsDisabled ? { session: null, revision: null } : await readThread(sessionKey);
 
     if (bool("reset")) {
-      const removed = await resetSession(sessionKey);
+      const removed = !sessionsDisabled && await resetSession(sessionKey, revision);
       if (!bool("quiet")) {
         status.note(
           removed && current
@@ -844,7 +845,7 @@ async function main(argv: string[]): Promise<number> {
         );
       }
     } else {
-      const archived = current ? await archiveSession(current) : null;
+      const archived = current ? await archiveSession(current, process.env, new Date(), revision) : null;
       if (!bool("quiet")) {
         status.note(
           archived
@@ -857,7 +858,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (bool("show-session")) {
-    const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
+    const existing = sessionsDisabled ? null : await loadSession(sessionKey, ttl);
     printSession(
       existing,
       sessionPath(sessionKey),
@@ -870,8 +871,8 @@ async function main(argv: string[]): Promise<number> {
   // history. Deliberately explicit — nothing is ever summarised behind your
   // back during a normal question.
   if (bool("compact")) {
-    const existing = sessionsDisabled ? null : await loadSession(sessionKey, sessionTtlMs());
-    if (!existing || existing.turns.length === 0) {
+    const { session: existing, revision } = sessionsDisabled ? { session: null, revision: null } : await readThread(sessionKey);
+    if (!existing || existing.turns.length === 0 || (ttl > 0 && Date.now() - Date.parse(existing.updatedAt) > ttl)) {
       process.stdout.write("no thread to compact\n");
       return 0;
     }
@@ -919,9 +920,9 @@ async function main(argv: string[]): Promise<number> {
     }
 
     // Compaction is lossy, so keep the previous thread recoverable.
-    const backup = await backupSession(existing);
+    const backup = sessionBackupPath(sessionKey);
     const compacted = applyCompaction(existing, summary.text);
-    await saveSession(compacted);
+    await commitThread(sessionKey, compacted, revision, "compact");
 
     const after = sessionTokens(compacted);
     process.stdout.write(`${process.stdout.isTTY ? sanitizeForTerminal(summary.text) : summary.text}\n`);
@@ -951,27 +952,27 @@ async function main(argv: string[]): Promise<number> {
     throw new UsageError("nothing to ask: give a prompt, an @path, or pipe stdin");
   }
 
-  const session =
-    sessionsOn && !bool("new") && !bool("reset")
-      ? await loadSession(sessionKey, sessionTtlMs())
-      : null;
+  const stored = sessionsOn ? await readThread(sessionKey) : { session: null, revision: null };
+  const session = stored.session && !(ttl > 0 && Date.now() - Date.parse(stored.session.updatedAt) > ttl)
+    ? stored.session : null;
 
   // Files from earlier turns stay attached, re-read from disk so a follow-up
   // after an edit sees current code. Refs that no longer resolve are dropped
   // rather than failing the follow-up.
   const carried: string[] = [];
   for (const ref of sessionRefs(session)) {
-    if (turnRefs.includes(ref)) continue;
-    try {
-      await resolveRef(ref, { cwd: process.cwd() });
-      carried.push(ref);
-    } catch {
+    const exact = path.resolve(scope, ref);
+    if (await stat(exact).then(s => s.isFile() || s.isDirectory(), () => false)) {
+      carried.push(exact);
+    } else {
       if (!bool("quiet")) status.note(`-- dropped @${ref} from the thread (no longer resolves)`);
     }
   }
   const allRefs = [...carried, ...turnRefs];
 
   const context = await collectContext(allRefs, {
+    exactRefs: new Set(carried),
+    excludePaths: session?.selection?.excluded.map(file => path.resolve(scope, file)) ?? [],
     includeSecrets: bool("include-secrets"),
     allMatches: bool("all-matches"),
     limits: {
@@ -982,8 +983,19 @@ async function main(argv: string[]): Promise<number> {
   });
 
   // Skills carry across a session like @refs do, and are re-read each turn.
-  const carriedSkills = sessionSkills(session).filter((name) => !skillTerms.includes(name));
-  const skills = await gatherSkills([...carriedSkills, ...skillTerms], flag("config"));
+  const skills = await gatherSkills(skillTerms, flag("config"));
+  const carriedSkills = sessionSkills(session).filter(name => !skills.some(s => s.name === name));
+  if (carriedSkills.length) {
+    const catalog = await discoverSkills(skillSearchPaths(process.cwd(), process.env, flag("config")));
+    const restored: LoadedSkill[] = [];
+    for (const name of carriedSkills) {
+      const pinned = session?.selection?.skills.find(s => s.name === name);
+      const item = catalog.find(s => s.name === name && (!pinned?.file || s.file === path.resolve(scope, pinned.file)));
+      if (item) restored.push(await loadSkill(item, "name"));
+      else status.note(`-- dropped unavailable skill ${name}`);
+    }
+    skills.unshift(...restored);
+  }
   if (!bool("quiet") && !bool("json")) {
     for (const skill of skills) {
       const how = skill.matched === "search" ? " [search]" : "";
@@ -1286,6 +1298,7 @@ async function main(argv: string[]): Promise<number> {
   // Record the turn. Only the question, the refs as typed, and the answer —
   // never file contents, which are re-read next turn.
   let saved: Session | null = null;
+  let saveFailed = false;
   if (sessionsOn) {
     saved = appendTurn(history, {
       scope,
@@ -1296,7 +1309,19 @@ async function main(argv: string[]): Promise<number> {
       answer: writeSummary ?? result.text,
       usage: result.usage,
     });
-    await saveSession(saved);
+    saved = { ...saved, selection: {
+      refs: [...new Set(context.resolutions.flatMap(r => r.paths.map(file => scopedPath(scope, file))))],
+      excluded: session?.selection?.excluded ?? [],
+      skills: skills.map(s => ({ name: s.name, file: scopedPath(scope, s.file) })),
+    } };
+    try {
+      await commitThread(sessionKey, saved, stored.revision);
+    } catch (error) {
+      // A concurrent save must not cost the user the answer they already paid for.
+      saved = null;
+      saveFailed = true;
+      status.warn(`-- answer received but thread not saved: ${String(error)}`);
+    }
   }
 
   if (bool("json")) {
@@ -1319,7 +1344,7 @@ async function main(argv: string[]): Promise<number> {
         ? { name: sessionLabel(saved), turns: saved.turns.length, scope: saved.scope }
         : null,
     });
-    return 0;
+    return saveFailed ? 1 : 0;
   }
 
   // In write mode the answer is the file itself; it is on disk, not stdout.
@@ -1388,7 +1413,7 @@ async function main(argv: string[]): Promise<number> {
       status.warn("-- warning: some context was truncated (--show-context to inspect)");
     }
   }
-  return 0;
+  return saveFailed ? 1 : 0;
 }
 
 try {

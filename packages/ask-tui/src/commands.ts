@@ -1,5 +1,6 @@
 import type { TuiChat } from "./chat.ts";
 import type { ManagerMode } from "./completion.ts";
+import { terminalField } from "@codehaus-au/ask/internal/terminal";
 
 export const TUI_HELP = `Chat: mention @files or @folders anywhere; quote paths with spaces.
 Typed mentions must name an existing path or glob; use the @ menu to search. Type \\@ for a literal @.
@@ -13,6 +14,7 @@ Transient failures may retry the same request up to twice, without model-driven 
 /unskill [name]  choose/remove an active skill (instructions only; no scripts)
 /copy  copy the last answer (Markdown) to your terminal clipboard
 /theme [name]  choose a theme; it is saved as your default in tui.json
+/switch <name>  save or resume a shared CLI/TUI thread    /sessions  list threads
 /clear  clear conversation and pending edits; keep attachments and skills
 /new  clear conversation, attachments and skills    /help    /quit
 Enter selects an open mention, otherwise sends · Shift+Enter inserts a newline
@@ -21,7 +23,7 @@ Ctrl+C copies highlighted text (OSC52); without a selection it exits
 Ctrl+D always exits · /copy copies the last answer as Markdown
 Ctrl+V pastes local clipboard text · Command/Super+C copies · Command/Super+V pastes
 Tab also selects a mention · Esc closes picker · Shift+drag uses native terminal selection
-PageUp/PageDown scroll the conversation. Chat history is not saved after exit.
+PageUp/PageDown scroll. Up/Down recall your prompts. Unnamed chats are temporary.
 Updates only: use the existing ask /create command for new files.`;
 
 /** Local command dispatch never initiates a model request. */
@@ -35,11 +37,19 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
   addText(text: string, color?: string): void; openManager(mode: ManagerMode, query?: string): void;
   rejected(paths: readonly string[]): void;
   applied(paths: readonly string[]): void;
+  restored?(): void;
 }): Promise<"handled" | "return" | "prompt"> {
   if (text === "/quit" || text === "/exit") { actions.quit(); return "return"; }
   if (text === "/help") actions.addText(TUI_HELP);
+  else if (text === "/sessions") actions.addText(await chat.threads());
+  else if (/^\/switch(?:\s|$)/.test(text)) {
+    await chat.switchThread(text.slice(7).trim());
+    actions.clear();
+    actions.restored?.();
+    actions.addText(`Thread: ${terminalField(chat.threadName!)}\nAttachments: ${chat.attachmentPaths.map(terminalField).join(", ") || "none"}\nExcluded: ${chat.excludedFilePaths.map(terminalField).join(", ") || "none"}\nSkills: ${chat.activeSkillNames.map(terminalField).join(", ") || "none"}`);
+  }
   else if (text === "/clear") {
-    chat.clearConversation(); actions.clear();
+    await chat.clearConversation(); actions.clear();
     actions.addText("Conversation, transcript and pending edits cleared; attachments and skills kept.");
   }
   else if (text === "/new") {
@@ -48,7 +58,7 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
   } else if (/^\/skills?(?:\s|$)/.test(text)) actions.openManager("skills", text.replace(/^\/skills?\s*/, ""));
   else if (text === "/unskill") actions.openManager("unskill");
   else if (text.startsWith("/unskill ")) {
-    chat.removeSkill(text.slice(9).trim().replace(/^(["'])(.*)\1$/, "$2"));
+    await chat.removeSkill(text.slice(9).trim().replace(/^(["'])(.*)\1$/, "$2"));
     actions.addText("Skill removed from future requests. Earlier answers remain in chat history.");
   } else if (text === "/context") actions.openManager("context");
   else if (/^\/theme(?:\s|$)/.test(text)) actions.openManager("theme", text.replace(/^\/theme\s*/, ""));
@@ -56,10 +66,10 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
   else if (text === "/copy") { actions.copy(chat.lastAnswer); return "return"; }
   else if (text === "/detach") actions.openManager("detach");
   else if (text.startsWith("/detach ")) {
-    chat.detach(text.slice(8).replace(/^(["'])(.*)\1$/, "$2")); actions.addText("Reference/file removed from future file context.");
+    await chat.detach(text.slice(8).replace(/^(["'])(.*)\1$/, "$2")); actions.addText("Reference/file removed from future file context.");
   } else if (/^\/review(?:\s|$)/.test(text)) actions.review(commandPaths(text.slice(7)));
   else if (/^\/reject(?:\s|$)/.test(text)) {
-    const rejected = chat.reject(commandPaths(text.slice(7)));
+    const rejected = await chat.rejectAndSave(commandPaths(text.slice(7)));
     actions.rejected(rejected);
     actions.addText(`Rejected ${JSON.stringify(rejected)}; nothing written.${chat.pendingCount ? ` ${chat.pendingCount} file(s) still pending.` : ""}`);
   } else if (/^\/apply(?:\s|$)/.test(text)) {

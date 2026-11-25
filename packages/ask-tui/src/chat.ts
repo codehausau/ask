@@ -7,7 +7,11 @@ import { applyUpdates, captureEditableFiles, parseUpdates, prepareUpdates, sensi
 import { discoverSkills, filterSkills, loadSkill, renderSkills, resolveSkill, skillSearchPaths, type LoadedSkill, type SkillSummary } from "@codehaus-au/ask/internal/skills";
 import { terminalField } from "@codehaus-au/ask/internal/terminal";
 import { hasGlobMagic, resolveRef, type Resolution } from "@codehaus-au/ask/internal/refs";
-import { DEFAULT_SESSION_MAX_TOKENS, estimateTokens } from "@codehaus-au/ask/internal/session";
+import {
+  commitThread, DEFAULT_SESSION_MAX_TOKENS, emptySession, estimateTokens, isValidSessionName,
+  listSessions, readThread, scopedPath, sessionMessages, sessionRefs, sessionSkills, writeCurrentSession,
+  type Session, type SessionTurn, type ThreadSelection,
+} from "@codehaus-au/ask/internal/session";
 import { chatRefs } from "./mentions.ts";
 export { chatRefs } from "./mentions.ts";
 
@@ -18,6 +22,8 @@ function containsPath(parent: string, file: string): boolean {
 
 export interface TuiChatOptions {
   readonly cwd: string;
+  readonly scope?: string;
+  readonly env?: NodeJS.ProcessEnv;
   readonly model?: string;
   readonly system?: string;
   readonly baseURL?: string | undefined;
@@ -59,6 +65,7 @@ export interface ChatReply {
   readonly missing: readonly string[];
   /** Oldest history messages dropped to fit the context window (or the default history cap). */
   readonly historyDropped: number;
+  readonly saveError?: string;
 }
 
 export interface TuiSessionStats {
@@ -77,14 +84,17 @@ export interface TuiSessionStats {
 export class TuiChat {
   private readonly client: ChatClient;
   private readonly options: TuiChatOptions;
-  private readonly history: HistoryMessage[] = [];
+  private record: Session;
+  private named = false;
+  private revision: string | null = null;
+  private unsaved = false;
   private attachments: string[] = [];
   private pending: ProposedUpdate[] = [];
   private reviewed = new Set<string>();
   /** Dropped history not yet reported, including drops before a failed request. */
   private unreportedDrops = 0;
   private busy = false;
-  private skills: LoadedSkill[] = [];
+  private skills: { name: string; file: string | null; known?: LoadedSkill }[] = [];
   private turns = 0;
   private lastInput: number | null = null;
   private lastOutput: number | null = null;
@@ -98,6 +108,7 @@ export class TuiChat {
   constructor(client: ChatClient, options: TuiChatOptions) {
     this.client = client;
     this.options = options;
+    this.record = emptySession(options.scope ?? options.cwd, "temporary");
     if (options.contextWindow !== undefined && (!Number.isSafeInteger(options.contextWindow) || options.contextWindow <= 0)) {
       throw new Error("Context window must be a positive safe integer.");
     }
@@ -111,7 +122,64 @@ export class TuiChat {
   get pendingSummary(): readonly UpdateSummary[] { return this.pending.map(updateSummary); }
   get activeSkillNames(): readonly string[] { return this.skills.map((skill) => skill.name); }
   get excludedFilePaths(): readonly string[] { return [...this.excludedFiles].map((file) => path.relative(this.options.cwd, file)); }
-  get lastAnswer(): string | null { return this.history.findLast((message) => message.role === "assistant")?.content ?? null; }
+  get lastAnswer(): string | null { return this.record.turns.findLast(t => !t.summary)?.answer ?? null; }
+  get threadName(): string | null { return this.named ? this.record.name : null; }
+  get savedTurns(): readonly SessionTurn[] { return this.record.turns; }
+  get prompts(): string[] {
+    return this.record.turns.filter(t => !t.summary && t.question && t.question !== "(piped input)").map(t => t.prompt ?? t.question);
+  }
+  private get scope(): string { return this.options.scope ?? this.options.cwd; }
+  private key(name: string) { return { scope: this.scope, name, env: this.options.env ?? process.env }; }
+  private selection(): ThreadSelection {
+    return {
+      refs: this.attachments.map(file => scopedPath(this.scope, file)),
+      excluded: [...this.excludedFiles].map(file => scopedPath(this.scope, file)),
+      skills: this.skills.map(({ name, file }) => ({ name, file: file && scopedPath(this.scope, file) })),
+    };
+  }
+  private async persist(operation?: "clear") {
+    if (!this.named) return;
+    this.unsaved = true;
+    this.record = { ...this.record, updatedAt: new Date().toISOString(), selection: this.selection() };
+    this.revision = await commitThread(this.key(this.record.name), this.record, this.revision, operation);
+    this.unsaved = false;
+  }
+  async threads(): Promise<string> {
+    const names = await listSessions(this.scope, this.options.env);
+    return [`Active: ${terminalField(this.threadName ?? "(temporary)")}`,
+      ...names.map(t => `${t.name === this.threadName ? "*" : " "} ${terminalField(t.name)} (${t.turns} ${t.turns === 1 ? "turn" : "turns"})`)].join("\n");
+  }
+  async switchThread(name: string): Promise<void> {
+    if (!isValidSessionName(name)) throw new Error("Usage: /switch <thread-name> (letters, digits, dot, dash, underscore; 1–64 characters).");
+    if (this.busy || this.pending.length) throw new Error("Finish the current request or resolve pending edits before switching.");
+    this.busy = true;
+    try {
+      const key = this.key(name);
+      const destination = await readThread(key);
+      const carry = !this.named || this.unsaved;
+      if (destination.session && carry && (this.unsaved || this.record.turns.length || this.attachments.length || this.skills.length || this.excludedFiles.size)) {
+        throw new Error("Unsaved conversation: /switch to an unused name to save it, or /new to discard it.");
+      }
+      const next = { ...(destination.session ?? (carry ? { ...this.record, selection: this.selection() } : emptySession(this.scope, name))),
+        name, updatedAt: new Date().toISOString() };
+      const revision = await commitThread(key, next, destination.revision);
+      await writeCurrentSession(this.scope, name, key.env);
+      this.resetMemory();
+      this.record = next; this.named = true; this.revision = revision; this.unsaved = false;
+      this.attachments = sessionRefs(next).map(p => path.resolve(this.scope, p));
+      this.excludedFiles = new Set(next.selection?.excluded.map(p => path.resolve(this.scope, p)));
+      this.skills = sessionSkills(next).map(name => {
+        const file = next.selection?.skills.find(s => s.name === name)?.file;
+        return { name, file: file ? path.resolve(this.scope, file) : null };
+      });
+      for (const turn of next.turns) {
+        this.turns++;
+        this.lastInput = turn.usage?.input ?? null; this.lastOutput = turn.usage?.output ?? null;
+        if (this.lastInput !== null) { this.totalInput += this.lastInput; this.inputTurns++; }
+        if (this.lastOutput !== null) { this.totalOutput += this.lastOutput; this.outputTurns++; }
+      }
+    } finally { this.busy = false; }
+  }
   get sessionStats(): TuiSessionStats {
     return {
       cwd: this.options.cwd, turns: this.turns, contextWindow: this.options.contextWindow ?? null,
@@ -164,12 +232,16 @@ export class TuiChat {
 
   /** Oldest messages go first; history always restarts at a user message. */
   private trimHistory(budget: number): void {
-    let total = this.history.reduce((sum, message) => sum + estimateTokens(message.content), 0);
+    const weight = (messages: HistoryMessage[]) => messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    let total = weight(sessionMessages(this.record));
     let dropped = 0;
-    while (this.history.length && (total > budget || this.history[0]!.role !== "user")) {
-      total -= estimateTokens(this.history.shift()!.content);
-      dropped++;
+    let start = 0;
+    while (start < this.record.turns.length && total > budget) {
+      const messages = sessionMessages({ ...this.record, turns: [this.record.turns[start++]!] });
+      total -= weight(messages);
+      dropped += messages.length;
     }
+    if (start) this.record = { ...this.record, turns: this.record.turns.slice(start) };
     this.unreportedDrops += dropped;
   }
 
@@ -211,16 +283,25 @@ export class TuiChat {
         selected.push(await loadSkill(summary, summary.name === term ? "name" : "search"));
       }
       const byName = new Map(this.skills.map((skill) => [skill.name, skill]));
-      for (const skill of selected) byName.set(skill.name, skill);
+      for (const skill of selected) byName.set(skill.name, { name: skill.name, file: skill.file, known: skill });
       this.skills = [...byName.values()];
+      await this.persist();
       return selected;
     } finally { this.busy = false; }
   }
 
-  removeSkill(name: string): void {
+  removeSkill(name: string): Promise<void> {
     if (this.busy || this.pending.length) throw new Error("Finish the current request or resolve pending edits first.");
     if (!this.skills.some((skill) => skill.name === name)) throw new Error(`No active skill named ${JSON.stringify(name)}. Use /unskill or /context to view active skills.`);
     this.skills = this.skills.filter((skill) => skill.name !== name);
+    return this.persistSelection();
+  }
+
+  /** Synchronous edit is visible immediately; hold the busy guard until disk catches up. */
+  private persistSelection(): Promise<void> {
+    if (!this.named) return Promise.resolve();
+    this.busy = true;
+    return this.persist().finally(() => { this.busy = false; });
   }
 
   async submit(text: string, onContextReady?: () => void): Promise<ChatReply> {
@@ -231,8 +312,16 @@ export class TuiChat {
     try {
       // Keep the user's selected file, rather than silently resolving a different
       // skill if discovery precedence changes. Missing/oversized skills fail closed.
-      const skills = await Promise.all(this.skills.map((skill) => loadSkill(skill, skill.matched)));
       const missing = await this.pruneMissing();
+      const skills: LoadedSkill[] = [];
+      const catalog = this.skills.length && (this.named || this.skills.some(s => !s.known)) ? await this.availableSkills() : [];
+      for (const choice of this.skills) {
+        const skill = (!this.named ? choice.known : undefined)
+          ?? catalog.find(s => s.name === choice.name && (!choice.file || s.file === choice.file));
+        if (!skill) { missing.push(`skill: ${choice.name}`); continue; }
+        skills.push(await loadSkill(skill, choice.known?.matched ?? "name"));
+      }
+      this.skills = skills.map(s => ({ name: s.name, file: s.file, known: s }));
       const added = await Promise.all(chatRefs(text).map((ref) => this.resolveMention(ref)));
       const addedPaths = added.flatMap((resolution) => resolution.paths);
       // A fresh explicit mention restores that file/folder. Merely retaining an
@@ -240,7 +329,7 @@ export class TuiChat {
       const excluded = new Set([...this.excludedFiles].filter((file) => !addedPaths.some((ref) => containsPath(ref, file))));
       const refs = [...this.attachments, ...addedPaths];
       const context = await collectContext(refs, {
-        cwd: this.options.cwd, limits: this.options.limits ?? {}, excludePaths: [...excluded],
+        cwd: this.options.cwd, exactRefs: new Set(refs), limits: this.options.limits ?? {}, excludePaths: [...excluded],
       });
       // Store resolved paths, not fuzzy names that could silently match another file.
       const attachments = [...new Set(context.resolutions.flatMap((resolution) => resolution.paths))];
@@ -251,6 +340,8 @@ export class TuiChat {
       this.excludedFiles = excluded;
       this.files = context.blocks.map((block) => block.path);
       onContextReady?.();
+      // A validated mention is an explicit context change even if the provider fails.
+      if (this.named && JSON.stringify(this.record.selection) !== JSON.stringify(this.selection())) await this.persist();
       const prompt = attachmentMessage(text, context);
       const instructions = await this.options.instructions?.() ?? "";
       const system = [this.options.system, instructions, renderSkills(skills), UPDATE_SYSTEM].filter(Boolean).join("\n\n");
@@ -259,7 +350,7 @@ export class TuiChat {
         prompt,
         model: this.options.model ?? DEFAULT_MODEL,
         system,
-        history: this.history,
+        history: sessionMessages(this.record),
         baseURL: this.options.baseURL,
         maxTokens: this.options.maxTokens,
         temperature: this.options.temperature,
@@ -270,7 +361,10 @@ export class TuiChat {
       this.lastOutput = result.usage.output;
       if (result.usage.input !== null) { this.totalInput += result.usage.input; this.inputTurns++; }
       if (result.usage.output !== null) { this.totalOutput += result.usage.output; this.outputTurns++; }
-      this.history.push({ role: "user", content: unescapeMentions(text) }, { role: "assistant", content: result.text });
+      this.record = { ...this.record, turns: [...this.record.turns, { at: new Date().toISOString(),
+        question: unescapeMentions(text), prompt: text, refs: [], answer: result.text, usage: result.usage }] };
+      let saveError: string | undefined;
+      try { await this.persist(); } catch (error) { saveError = `Answer not saved: ${String(error)}. Use /switch with an unused name to keep it.`; }
       let proposalError: string | null = null;
       try {
         if (result.finishReason !== "stop") {
@@ -285,7 +379,7 @@ export class TuiChat {
       const historyDropped = this.unreportedDrops;
       this.unreportedDrops = 0;
       return {
-        text: result.text, context, proposalError, missing, historyDropped,
+        text: result.text, context, proposalError, missing, historyDropped, ...(saveError ? { saveError } : {}),
         status: `${result.model} · ${context.blocks.length} file(s) · skills ${skills.map((skill) => terminalField(skill.name)).join(", ") || "none"} · tokens ${result.usage.input ?? "?"} in / ${result.usage.output ?? "?"} out`,
       };
     } finally { this.busy = false; }
@@ -327,13 +421,25 @@ export class TuiChat {
     this.pending = this.pending.filter((update) => !selected.includes(update));
     for (const update of selected) this.reviewed.delete(update.path);
     try {
-      const paths = await applyUpdates(selected);
-      this.history.push({ role: "user", content: `Local edit decision: approved and applied updates to ${JSON.stringify(paths)}.` });
-      return paths;
-    } catch (error) {
-      this.history.push({ role: "user", content: `Local edit application failed; do not assume any proposal applied. ${String(error)}` });
-      throw error;
+      let applied: string[];
+      try { applied = await applyUpdates(selected); }
+      catch (error) {
+        this.recordDecision(`Local edit application failed; do not assume any proposal applied. ${String(error)}`);
+        try { await this.persist(); }
+        catch (saveError) { throw new Error(`${String(error)}. Thread outcome not saved: ${String(saveError)}`); }
+        throw error;
+      }
+      this.recordDecision(`Local edit decision: approved and applied updates to ${JSON.stringify(applied)}.`);
+      try { await this.persist(); }
+      catch (error) { throw new Error(`Files written: ${JSON.stringify(applied)}. Thread outcome not saved: ${String(error)}`); }
+      return applied;
     } finally { this.busy = false; }
+  }
+
+  private recordDecision(text: string) {
+    const last = this.record.turns.at(-1);
+    if (last) this.record = { ...this.record, turns: [...this.record.turns.slice(0, -1),
+      { ...last, decisions: [...(last.decisions ?? []), text] }] };
   }
 
   /** Discard proposals (all when none are named); returns the discarded paths. */
@@ -343,7 +449,13 @@ export class TuiChat {
     this.pending = this.pending.filter((update) => !selected.includes(update));
     for (const update of selected) this.reviewed.delete(update.path);
     const rejected = selected.map((update) => update.path);
-    this.history.push({ role: "user", content: `Local edit decision: rejected proposals for ${JSON.stringify(rejected)}; those files were not written.` });
+    this.recordDecision(`Local edit decision: rejected proposals for ${JSON.stringify(rejected)}; those files were not written.`);
+    return rejected;
+  }
+
+  async rejectAndSave(paths: readonly string[]): Promise<string[]> {
+    const rejected = this.reject(paths);
+    await this.persistSelection();
     return rejected;
   }
 
@@ -355,17 +467,20 @@ export class TuiChat {
       await this.pruneMissing();
       const added = await resolveRef(ref, { cwd: this.options.cwd });
       const excluded = new Set([...this.excludedFiles].filter((file) => !added.paths.some((parent) => containsPath(parent, file))));
-      const context = await collectContext([...new Set([...this.attachments, ...added.paths])], {
+      const refs = new Set([...this.attachments, ...added.paths]);
+      const context = await collectContext([...refs], {
+        exactRefs: refs,
         cwd: this.options.cwd, limits: this.options.limits ?? {}, excludePaths: [...excluded],
       });
       this.attachments = [...new Set(context.resolutions.flatMap((resolution) => resolution.paths))];
       this.files = context.blocks.map((block) => block.path);
       this.excludedFiles = excluded;
+      await this.persist();
       return context;
     } finally { this.busy = false; }
   }
 
-  detach(target: string): void {
+  detach(target: string): Promise<void> {
     if (this.busy || this.pending.length) throw new Error("Finish the current request or resolve pending edits first.");
     const absolute = path.resolve(this.options.cwd, target.replace(/^@/, ""));
     const knownFile = this.files.some((file) => path.resolve(this.options.cwd, file) === absolute);
@@ -376,19 +491,30 @@ export class TuiChat {
       const name = path.resolve(this.options.cwd, file);
       return !this.excludedFiles.has(name) && this.attachments.some((ref) => containsPath(ref, name));
     });
+    return this.persistSelection();
   }
 
-  restoreFile(target: string): void {
+  restoreFile(target: string): Promise<void> {
     if (this.busy || this.pending.length) throw new Error("Finish the current request or resolve pending edits first.");
     const absolute = path.resolve(this.options.cwd, target);
     if (!this.excludedFiles.delete(absolute)) throw new Error(`Not excluded: ${JSON.stringify(target)}`);
     if (!this.attachments.some((ref) => containsPath(ref, absolute))) this.attachments.push(absolute);
+    return this.persistSelection();
   }
 
   /** Start a fresh conversation with the same selected context and settings. */
-  clearConversation(): void {
+  clearConversation(): Promise<void> {
     if (this.busy) throw new Error("A request or write is already in progress.");
-    this.history.length = 0;
+    if (!this.named) { this.resetHistory(); return Promise.resolve(); }
+    this.busy = true;
+    const cleared = { ...emptySession(this.scope, this.record.name), selection: this.selection() };
+    return commitThread(this.key(this.record.name), cleared, this.revision, "clear").then(revision => {
+      this.resetHistory(); this.record = cleared; this.revision = revision; this.unsaved = false;
+    }).finally(() => { this.busy = false; });
+  }
+
+  private resetHistory(): void {
+    this.record = emptySession(this.scope, "temporary");
     this.pending = [];
     this.reviewed.clear();
     this.turns = 0;
@@ -401,11 +527,15 @@ export class TuiChat {
     this.unreportedDrops = 0;
   }
 
-  reset(): void {
-    this.clearConversation();
+  private resetMemory(): void {
+    this.resetHistory();
     this.attachments = [];
     this.skills = [];
     this.files = [];
     this.excludedFiles.clear();
+  }
+  reset(): void {
+    if (this.busy) throw new Error("A request or write is already in progress.");
+    this.resetMemory(); this.named = false; this.revision = null; this.unsaved = false;
   }
 }

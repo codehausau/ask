@@ -33,10 +33,13 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
   if (options.theme !== undefined) theme.select(options.theme, themeModes(options.theme)[0]!);
   const state: UIState = { working: false, alive: true };
   let completion: ReturnType<typeof createCompletion> | undefined;
+  let recalling = false;
+  let browse: { index: number; draft: string; cursor: number } | null = null;
+  let generation = 0;
   const layout = createChatLayout(renderer, model, chat.sessionStats.cwd, {
     onSubmit: () => { void submit(); },
-    onContentChange: () => completion?.contentChanged(),
-    onCursorChange: () => completion?.refresh(),
+    onContentChange: () => { if (!recalling) completion?.contentChanged(); },
+    onCursorChange: () => { if (!recalling) completion?.refresh(); },
   });
   const { root, input, status, picker, transcript } = layout;
   const view = createTranscript(renderer, transcript, theme, options.updateView);
@@ -48,7 +51,7 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
     theme.select(name, mode); view.updateStyle(); paintTheme();
   }
   function refreshSummary() {
-    if (state.alive) layout.refreshSummary(chat.sessionStats, chat.activeSkillNames, chat.pendingCount);
+    if (state.alive) layout.refreshSummary(chat.sessionStats, chat.activeSkillNames, chat.pendingCount, chat.threadName);
   }
   function addText(content: string, color?: string) { if (state.alive) view.addText(content, color); }
   // A confirmed theme choice (not a preview) becomes the default, one save at a time.
@@ -78,14 +81,14 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
     status.content = chat.pendingCount ? `${chat.pendingCount} pending file(s) · /review to inspect · /apply to approve · /reject to discard` : "Ready · /help for commands";
   }
 
-  async function updateAction(action: UpdateAction, path: string, turn: number) {
-    if (!state.alive || state.working || chat.sessionStats.turns !== turn) return;
+  async function updateAction(action: UpdateAction, path: string, turn: number, owner: number) {
+    if (!state.alive || state.working || generation !== owner || chat.sessionStats.turns !== turn) return;
     state.working = true; syncUpdates();
     try {
       if (action === "review") view.review(chat.reviewDetails([path]), true);
       else if (action === "cancel") chat.cancelReview([path]);
       else if (action === "reject") {
-        const rejected = chat.reject([path]);
+        const rejected = await chat.rejectAndSave([path]);
         view.rejected(rejected);
         addText(`Rejected ${JSON.stringify(rejected)}; nothing written.`);
       } else {
@@ -105,15 +108,25 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
 
   async function submit() {
     if (state.working || !state.alive) return;
-    const text = input.plainText.trim();
+    const original = input.plainText;
+    const text = original.trim();
     if (!text) return;
+    browse = null;
     clipboard.submitted();
     state.working = true; picker.visible = false; input.setText("");
     syncUpdates();
     let timer: ReturnType<typeof setInterval> | undefined;
     try {
       const command = await dispatchCommand(text, chat, {
-        quit: () => renderer.destroy(), clear: view.clear, review, rejected: view.rejected,
+        quit: () => renderer.destroy(), clear: () => { generation++; if (state.alive) view.clear(); }, review, rejected: view.rejected,
+        restored: () => {
+          if (!state.alive) return;
+          for (const turn of chat.savedTurns) {
+            if (!turn.summary) view.addUserMessage(turn.prompt ?? turn.question);
+            view.addText(`${turn.summary ? "Summary: " : ""}${turn.answer}`);
+            for (const note of turn.decisions ?? []) view.addText(note);
+          }
+        },
         applied: (paths) => { if (state.alive) view.applied(paths); }, copy: clipboard.copyText,
         addText, openManager: (mode, query) => completion!.openManager(mode, query),
       });
@@ -125,7 +138,7 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
         timer = setInterval(() => {
           if (state.alive) status.content = `Waiting for ${terminalField(model)}… ${((Date.now() - started) / 1000).toFixed(1)}s · no automatic follow-up`;
         }, 250);
-        const reply = await chat.submit(text, refreshSummary);
+        const reply = await chat.submit(original, refreshSummary);
         if (!state.alive) return;
         if (reply.missing.length) addText(`Removed attachments that no longer exist: ${reply.missing.map(terminalField).join(", ")}`, "#fcd34d");
         if (reply.historyDropped) {
@@ -133,7 +146,9 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
           addText(`Dropped the ${reply.historyDropped} oldest history message(s) to fit ${limit}. Attached files are still sent in full.`, "#fcd34d");
         }
         const turn = chat.sessionStats.turns;
-        view.addAnswer(reply.text, chat.pendingCount ? chat.previewDetails() : [], (action, path) => { void updateAction(action, path, turn); });
+        const owner = generation;
+        view.addAnswer(reply.text, chat.pendingCount ? chat.previewDetails() : [], (action, path) => { void updateAction(action, path, turn, owner); });
+        if (reply.saveError) addText(reply.saveError, "#fda4af");
         if (reply.context.skipped.length) addText(`Skipped context: ${reply.context.skipped.map((item) => `${terminalField(item.path)} (${item.reason})`).join(", ")}`, "#fcd34d");
         if (reply.context.truncated) addText("Context was truncated; truncated files cannot be updated.", "#fcd34d");
         if (reply.proposalError) addText(`Edits unavailable: ${reply.proposalError}`, "#fcd34d");
@@ -145,7 +160,7 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
         addText(error instanceof Error ? error.message : String(error), "#fda4af");
         if (error instanceof SkillResolutionError && error.candidates.length) addText(error.candidates.map(terminalField).join("\n"), "#fcd34d");
         status.content = "Failed · your draft has been restored";
-        if (!input.plainText) { input.setText(text); input.gotoBufferEnd(); }
+        if (!input.plainText) { input.setText(original); input.gotoBufferEnd(); }
       }
     } finally {
       if (timer) clearInterval(timer);
@@ -169,6 +184,25 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
       key.preventDefault(); transcript.scrollBy(key.name === "pageup" ? -10 : 10); return;
     }
     completion!.handleKey(key);
+    if (key.defaultPrevented || picker.visible || !input.focused || state.working ||
+      key.shift || key.ctrl || key.meta || key.super || (key.name !== "up" && key.name !== "down")) return;
+    const up = key.name === "up";
+    const row = input.scrollY + input.visualCursor.visualRow;
+    if (up ? row > 0 : row < input.editorView.getTotalVirtualLineCount() - 1) return;
+    const prompts = chat.prompts;
+    if (!prompts.length || (!up && !browse)) return;
+    browse ??= { index: prompts.length, draft: input.plainText, cursor: input.cursorOffset };
+    browse.index = Math.max(0, Math.min(prompts.length, browse.index + (up ? -1 : 1)));
+    key.preventDefault();
+    recalling = true;
+    try {
+      if (browse.index === prompts.length) {
+        input.setText(browse.draft); input.cursorOffset = browse.cursor; browse = null;
+      } else {
+        input.setText(prompts[browse.index]!); input.gotoBufferEnd();
+      }
+      completion!.dismiss();
+    } finally { recalling = false; }
   };
   renderer.keyInput.on("keypress", keypress);
   const resize = () => { layout.resize(); view.resize(); refreshSummary(); completion!.refresh(); };

@@ -77,6 +77,8 @@ export interface CollectOptions {
   readonly limits?: LimitOverrides;
   /** User-excluded files; applied before reading and context budgets. */
   readonly excludePaths?: readonly string[];
+  /** Previously resolved identities must never fall back to search or globbing. */
+  readonly exactRefs?: ReadonlySet<string>;
 }
 
 export interface ExtractedPrompt {
@@ -314,7 +316,8 @@ export async function collectContext(
   const state: WalkState = { cwd, realCwd, limits, includeSecrets, found: candidates, skipped, excluded };
 
   for (const ref of refs) {
-    const resolution = await resolveRef(ref, {
+    const resolution: Resolution = options.exactRefs?.has(ref)
+      ? { ref, kind: "path", paths: [path.resolve(cwd, ref)] } : await resolveRef(ref, {
       cwd,
       includeSecrets,
       allMatches: options.allMatches ?? false,

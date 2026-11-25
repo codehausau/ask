@@ -20,6 +20,55 @@ function popupRows(picker: BoxRenderable): TextRenderable {
   return rows;
 }
 
+test("Up/Down recalls only active user prompts, restores the draft and never submits on recall", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-recall-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  let calls = 0;
+  const client: ChatClient = { chat: { completions: { async create() {
+    return { id: "mock", created: 0, model: "stub", object: "chat.completion", choices: [{
+      index: 0, finish_reason: "stop", logprobs: null, message: { role: "assistant", refusal: null, content: `answer ${++calls}` },
+    }] };
+  } } } };
+  const env = { ASK_STATE_DIR: path.join(cwd, "state") };
+  const chat = new TuiChat(client, { cwd, env });
+  const setup = await createTestRenderer({ width: 110, height: 38, kittyKeyboard: true });
+  t.after(() => setup.dispose());
+  const ui = mountChatUI(setup.renderer, chat, "stub");
+  const draft = async (s: string) => { ui.input.setText(s); ui.input.gotoBufferEnd(); await setup.flush(); };
+  const submit = async (s: string) => {
+    await draft(s); setup.mockInput.pressEnter(); await waitUntilIdle(ui); await setup.flush();
+  };
+  const arrow = async (key: "up" | "down") => { setup.mockInput.pressArrow(key); await setup.flush(); return ui.input.plainText; };
+  await submit("first \\@literal");
+  await submit("repeat");
+  await submit("repeat");
+  await submit("/switch work");
+  await draft("unfinished"); ui.input.cursorOffset = 3;
+  assert.equal(await arrow("up"), "repeat"); assert.equal(await arrow("up"), "repeat");
+  assert.equal(await arrow("up"), "first \\@literal"); assert.equal(await arrow("up"), "first \\@literal");
+  await arrow("down"); await arrow("down"); assert.equal(await arrow("down"), "unfinished");
+  assert.equal(ui.input.cursorOffset, 3);
+  await draft("first row\nsecond row");
+  assert.equal(await arrow("up"), "first row\nsecond row", "native multiline movement first");
+  assert.equal(await arrow("up"), "repeat");
+  assert.equal(await arrow("down"), "first row\nsecond row");
+  const tall = Array.from({ length: 9 }, (_, i) => `row ${i}`).join("\n");
+  await draft(tall);
+  for (let i = 0; i < 8; i++) assert.equal(await arrow("up"), tall, "scroll through rows above the viewport");
+  assert.equal(await arrow("up"), "repeat");
+  assert.equal(await arrow("down"), tall);
+  ui.setCandidates(["a.ts", "b.ts"]); await draft("@"); assert.ok(ui.picker.visible);
+  assert.equal(await arrow("up"), "@", "picker navigation wins");
+  await draft(""); await arrow("up"); ui.input.insertText(" edited");
+  setup.mockInput.pressEnter(); await waitUntilIdle(ui);
+  assert.equal(chat.prompts.at(-1), "repeat edited"); assert.equal(calls, 4);
+  await submit("/switch docs"); assert.equal(await arrow("up"), "");
+  await submit("/switch work"); assert.equal(await arrow("up"), "repeat edited");
+  await submit("/clear"); assert.equal(await arrow("up"), "");
+  await submit("/new"); assert.equal(await arrow("up"), "");
+  assert.equal(calls, 4);
+});
+
 function localClipboardEnvironment(t: TestContext) {
   const keys = ["SSH_CONNECTION", "SSH_TTY"];
   const saved = keys.map((key) => process.env[key]);

@@ -11,7 +11,7 @@ import { chatRefs, TuiChat } from "../src/chat.ts";
 import { mentionCandidates } from "@codehaus-au/ask/internal/refs";
 import { MAX_SKILL_BYTES, SkillResolutionError } from "@codehaus-au/ask/internal/skills";
 import { collectContext } from "@codehaus-au/ask/internal/context";
-import { DEFAULT_SESSION_MAX_TOKENS, estimateTokens } from "@codehaus-au/ask/internal/session";
+import { DEFAULT_SESSION_MAX_TOKENS, estimateTokens, readCurrentSession } from "@codehaus-au/ask/internal/session";
 import { dispatchCommand } from "../src/commands.ts";
 
 function block(target: string, search: string, replacement: string) {
@@ -79,6 +79,41 @@ test("response commands are inert and /apply only writes reviewed files, without
       await assert.rejects(readFile(marker), { code: "ENOENT" });
     } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("switching is local; neither a pending proposal nor its approval can cross a thread boundary", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-thread-actions-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const env = { ASK_STATE_DIR: path.join(cwd, "state") };
+  await writeFile(path.join(cwd, "a.ts"), "old");
+  const { client, requests } = clientWith([{ text: block("a.ts", "old", "new") }]);
+  const chat = new TuiChat(client, { cwd, env });
+  for (const name of ["exec", "execFile", "spawn", "fork", "execSync", "execFileSync", "spawnSync"] as const) {
+    t.mock.method(childProcess, name, () => { assert.fail(`thread command launched ${name}`); });
+  }
+  syncBuiltinESMExports();
+  try {
+    await chat.switchThread("work");
+    const submitting = chat.submit("update @a.ts");
+    await assert.rejects(chat.switchThread("other"), /current request/);
+    await submitting;
+    assert.equal(chat.pendingCount, 1);
+    await assert.rejects(chat.switchThread("other"), /pending edits/);
+    chat.review();
+    await assert.rejects(chat.switchThread("other"), /pending edits/);
+    assert.equal(await readCurrentSession(cwd, env), "work");
+    const applying = chat.apply();
+    await assert.rejects(chat.switchThread("other"), /current request/);
+    await applying;
+    await chat.switchThread("other"); await chat.switchThread("work");
+    assert.match(await chat.threads(), /\* work/);
+    assert.equal(chat.pendingCount, 0); assert.deepEqual(chat.pendingReviews, []);
+    await assert.rejects(chat.apply(), /No pending edits/);
+    assert.match(chat.savedTurns[0]!.answer, /<update/);
+    assert.deepEqual(chat.prompts, ["update @a.ts"]);
+    assert.equal(requests.length, 1);
+    assert.equal(await readFile(path.join(cwd, "a.ts"), "utf8"), "new");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test("submission publishes validated attachment context before requesting a completion", async () => {
