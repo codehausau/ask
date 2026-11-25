@@ -1,0 +1,105 @@
+{
+  "name": "@codehaus-au/ask",
+  "version": "0.2.0",
+  "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
+  "keywords": [
+    "llm",
+    "cli",
+    "openai",
+    "one-shot",
+    "code-review"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codehausau/ask.git",
+    "directory": "packages/ask"
+  },
+  "bugs": {
+    "url": "https://github.com/codehausau/ask/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ask": "dist/src/cli.js"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    "./internal/chat": {
+      "types": "./dist/src/chat.d.ts",
+      "default": "./dist/src/chat.js"
+    },
+    "./internal/config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
+    },
+    "./internal/context": {
+      "types": "./dist/src/context.d.ts",
+      "default": "./dist/src/context.js"
+    },
+    "./internal/env": {
+      "types": "./dist/src/env.d.ts",
+      "default": "./dist/src/env.js"
+    },
+    "./internal/instructions": {
+      "types": "./dist/src/instructions.d.ts",
+      "default": "./dist/src/instructions.js"
+    },
+    "./internal/refs": {
+      "types": "./dist/src/refs.d.ts",
+      "default": "./dist/src/refs.js"
+    },
+    "./internal/safe-write": {
+      "types": "./dist/src/safe-write.d.ts",
+      "default": "./dist/src/safe-write.js"
+    },
+    "./internal/session": {
+      "types": "./dist/src/session.d.ts",
+      "default": "./dist/src/session.js"
+    },
+    "./internal/skills": {
+      "types": "./dist/src/skills.d.ts",
+      "default": "./dist/src/skills.js"
+    },
+    "./internal/terminal": {
+      "types": "./dist/src/terminal.d.ts",
+      "default": "./dist/src/terminal.js"
+    },
+    "./internal/timeout": {
+      "types": "./dist/src/timeout.d.ts",
+      "default": "./dist/src/timeout.js"
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/src",
+    "schema",
+    "completions",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/src/cli.js",
+    "prepack": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --import ./dist/test/isolate-config.js --test dist/test/*.test.js",
+    "test:dev": "node --experimental-strip-types --import ./test/isolate-config.ts --test test/*.test.ts",
+    "dev": "node --experimental-strip-types src/cli.ts",
+    "smoke": "pnpm build && node dist/src/cli.js --dry-run '@src/context.ts review this file for me'",
+    "ask": "node dist/src/cli.js",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "marked": "^18.0.14",
+    "openai": "^7.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

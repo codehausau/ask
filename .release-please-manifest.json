@@ -1,3 +1,4 @@
 {
-  ".": "0.2.0"
+  "packages/ask": "0.2.0",
+  "packages/ask-tui": "0.2.0"
 }

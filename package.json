@@ -1,62 +1,18 @@
 {
-  "name": "@codehaus-au/ask",
-  "version": "0.2.0",
-  "description": "One-shot LLM CLI: attach files or directories as context, ask a question, get a single answer. No tools, no agent loop.",
-  "keywords": [
-    "llm",
-    "cli",
-    "openai",
-    "one-shot",
-    "code-review"
-  ],
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public",
-    "provenance": true,
-    "registry": "https://registry.npmjs.org/"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/codehausau/ask.git"
-  },
-  "bugs": {
-    "url": "https://github.com/codehausau/ask/issues"
-  },
+  "name": "ask-workspace",
+  "private": true,
   "type": "module",
-  "bin": {
-    "ask": "dist/src/cli.js"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  },
   "packageManager": "pnpm@10.11.0",
-  "files": [
-    "dist/src",
-    "completions",
-    "README.md",
-    "SECURITY.md"
-  ],
   "scripts": {
-    "build": "tsc && chmod +x dist/src/cli.js",
-    "prepack": "pnpm build",
-    "typecheck": "tsc --noEmit",
-    "test": "pnpm build && node --test dist/test/*.test.js",
-    "test:dev": "node --experimental-strip-types --test test/*.test.ts",
-    "dev": "node --experimental-strip-types src/cli.ts",
-    "smoke": "pnpm build && node dist/src/cli.js --dry-run '@src/context.ts review this file for me'",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @codehaus-au/ask build && pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:bun": "pnpm --filter @codehaus-au/ask build && pnpm --filter @codehaus-au/ask-tui test:bun",
     "audit": "pnpm audit --audit-level high --prod",
     "check": "pnpm typecheck && pnpm test && pnpm audit",
-    "ask": "node dist/src/cli.js",
+    "ask": "node packages/ask/dist/src/cli.js",
+    "tui": "pnpm -r build && node packages/ask-tui/dist/src/launcher.js",
     "refresh": "git pull --ff-only && pnpm install --frozen-lockfile && pnpm build && ask --version",
-    "lint:workflows": "actionlint .github/workflows/*.yml && zizmor --persona=regular .github/",
-    "prepublishOnly": "pnpm build"
-  },
-  "dependencies": {
-    "marked": "^18.0.14",
-    "openai": "^7.23.0"
-  },
-  "devDependencies": {
-    "@types/node": "^26.6.3",
-    "typescript": "^7.0.2"
+    "lint:workflows": "actionlint .github/workflows/*.yml && zizmor --persona=regular .github/"
   }
 }

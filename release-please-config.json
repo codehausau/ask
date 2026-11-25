@@ -1,11 +1,24 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "bootstrap-sha": "b0c89dcebbfd41e9aa54f5a4f60d46b69a6043a4",
+  "bootstrap-sha": "3c9d5bf07000bcc19f3e8fe07c5fcea4e4336499",
   "release-type": "node",
-  "include-component-in-tag": false,
+  "include-component-in-tag": true,
   "include-v-in-tag": true,
   "bump-minor-pre-major": true,
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "ask",
+      "components": ["ask", "ask-tui"]
+    }
+  ],
   "packages": {
-    ".": {}
+    "packages/ask": {
+      "component": "ask",
+      "include-component-in-tag": false
+    },
+    "packages/ask-tui": {
+      "component": "ask-tui"
+    }
   }
 }

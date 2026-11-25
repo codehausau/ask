@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/codehausau/ask/main/packages/ask/schema/ask.schema.json",
+  "title": "ask.json",
+  "description": "Common settings for ask and ask-tui. Files are layered (global ~/.config/ask/, --config or $ASK_CONFIG, the project's ask.json and .ask/, $ASK_CONFIG_CONTENT, ASK_* variables, flags); null removes a lower layer's value and an empty string means \"not set\". Strings may use {env:NAME}.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "endpoint": {
+      "description": "Where requests go. An untrusted project cannot set this; see ask /trust. A layer that changes url without apiKey does not inherit a lower layer's key.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "description": "OpenAI-compatible base URL, e.g. https://api.openai.com/v1 or http://localhost:11434/v1. Defaults to OPENAI_BASE_URL.", "type": ["string", "null"] },
+        "apiKey": { "description": "API key. Prefer \"{env:NAME}\" to keep it out of the file. Defaults to OPENAI_API_KEY.", "type": ["string", "null"] },
+        "organization": { "description": "OpenAI organization ID. Defaults to OPENAI_ORG_ID.", "type": ["string", "null"] },
+        "project": { "description": "OpenAI project ID. Defaults to OPENAI_PROJECT_ID.", "type": ["string", "null"] }
+      }
+    },
+    "model": { "description": "Model ID (also ASK_MODEL, --model). Default gpt-4o-mini.", "type": ["string", "null"] },
+    "system": { "description": "System prompt (also ASK_SYSTEM, --system).", "type": ["string", "null"] },
+    "temperature": { "description": "Sampling temperature; omitted from requests unless set.", "type": ["number", "null"], "minimum": 0, "maximum": 2 },
+    "maxTokens": { "description": "Cap on the answer length, in tokens.", "type": ["integer", "null"], "minimum": 1 },
+    "timeout": { "description": "Request timeout in seconds (also ASK_TIMEOUT, --timeout). Default 120.", "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 2147483.647 },
+    "instructions": {
+      "description": "Extra instruction files or globs, relative to this file (~/ allowed in your own config), added after AGENTS.md. Lists from layers are joined; null clears earlier ones.",
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    }
+  }
+}

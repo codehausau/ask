@@ -1,0 +1,6 @@
+# Runtime configuration belongs to Ask, never to the repository being inspected.
+# An explicit config path skips automatic local/global runtime configuration.
+# Do not add preloads here (Bun 1.3.14 also rejects an empty preload array).
+
+[install]
+auto = "disable"

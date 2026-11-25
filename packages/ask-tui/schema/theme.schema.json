@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/codehausau/ask/main/packages/ask-tui/schema/theme.schema.json",
+  "title": "ask-tui theme",
+  "description": "A custom theme: themes/<name>.json(c) in ~/.config/ask/, a --config directory or the project .ask/. Unset roles come from extends, or else from the ask palette. Colours must be hex.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "extends": {
+      "description": "A built-in theme (such as nord) or an earlier custom theme to take unset roles from.",
+      "type": "string"
+    },
+    "mode": {
+      "description": "Whether this is a dark or light theme. Defaults to the extended theme, else dark.",
+      "enum": [
+        "dark",
+        "light"
+      ]
+    },
+    "background": {
+      "description": "Main background",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "panel": {
+      "description": "Message, composer and popup background",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "accent": {
+      "description": "Borders, highlights and the selected item",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "text": {
+      "description": "Body text",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "muted": {
+      "description": "Secondary text such as status and hints",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "heading": {
+      "description": "Sidebar headings",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "summary": {
+      "description": "Sidebar text",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "border": {
+      "description": "Dividers and inactive borders",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "code": {
+      "description": "Inline code and code blocks",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "warning": {
+      "description": "Warnings and notices",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "error": {
+      "description": "Errors and removed lines",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "selectionBg": {
+      "description": "Selected text background",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    },
+    "selectionFg": {
+      "description": "Selected text foreground",
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+    }
+  }
+}

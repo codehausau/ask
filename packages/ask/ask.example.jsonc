@@ -1,0 +1,36 @@
+// Example ~/.config/ask/ask.jsonc (or $XDG_CONFIG_HOME/ask/ask.jsonc).
+//   mkdir -p ~/.config/ask && cp ask.example.jsonc ~/.config/ask/ask.jsonc && chmod 600 ~/.config/ask/ask.jsonc
+// Comments and trailing commas are allowed in .json and .jsonc files.
+// Run `ask --show-config` to see every setting and which file or variable it came from.
+{
+  // Editors use this for completion and checking; ask ignores it.
+  "$schema": "https://raw.githubusercontent.com/codehausau/ask/main/packages/ask/schema/ask.schema.json",
+
+  // Where requests go. "{env:NAME}" is replaced by that variable's value
+  // (an unset variable means "not set here"). Without any endpoint settings,
+  // OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_ORG_ID and OPENAI_PROJECT_ID are used.
+  "endpoint": {
+    "url": "https://api.openai.com/v1",
+    "apiKey": "{env:OPENAI_API_KEY}",
+    // "organization": "org-...",
+    // "project": "proj_...",
+  },
+
+  // Ollama and other local servers need no key:
+  //   "endpoint": { "url": "http://localhost:11434/v1" }, "model": "qwen2.5-coder:7b",
+
+  "model": "gpt-4o-mini",
+  // "system": "Answer briefly.",
+  // "temperature": 0.2,
+  // "maxTokens": 2000,
+  "timeout": 120, // seconds
+
+  // Extra instruction files or globs, relative to this file, added to every
+  // request after AGENTS.md (which is read from this directory automatically).
+  // "instructions": ["~/notes/style.md", "rules/*.md"],
+}
+
+// CLI-only settings go in cli.json(c):
+//   { "sessionMaxTokens": 32000, "sessionTtlMinutes": 120, "next": true, "spinner": "auto" }
+// TUI-only settings go in tui.json(c):  { "theme": "dracula", "contextWindow": 32768, "mouse": true }
+// with "$schema" set to .../schema/cli.schema.json or .../schema/tui.schema.json.
