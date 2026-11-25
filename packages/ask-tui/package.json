@@ -1,6 +1,6 @@
 {
   "name": "@codehaus-au/ask-tui",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Interactive terminal chat for ask: attach files with @, one logical completion per message, suggested edits applied only after diff review. No tools, no agent loop.",
   "keywords": [
     "llm",
