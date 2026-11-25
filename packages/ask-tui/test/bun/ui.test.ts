@@ -177,6 +177,43 @@ test("/switch browses saved project threads, cancels locally, and accepts an exa
   assert.equal(calls, 0);
 });
 
+test("/new creates a selectable empty thread before the first message and never overwrites another thread", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-new-thread-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  let calls = 0;
+  const client: ChatClient = { chat: { completions: { async create() { calls++; throw new Error("unexpected request"); } } } };
+  const options = { cwd, env: { ASK_STATE_DIR: path.join(cwd, "state") } };
+  const chat = new TuiChat(client, options);
+  const setup = await createTestRenderer({ width: 110, height: 38, kittyKeyboard: true });
+  t.after(() => setup.dispose());
+  const ui = mountChatUI(setup.renderer, chat, "stub");
+  const command = async (text: string) => {
+    ui.input.setText(text); ui.input.gotoBufferEnd(); setup.mockInput.pressEnter();
+    await waitUntilIdle(ui); await setup.flush();
+  };
+  await command("/new work");
+  assert.equal(chat.threadName, "work");
+  await writeFile(path.join(cwd, "keep.ts"), "kept");
+  await chat.attach("keep.ts");
+  await command("/new");
+  const first = chat.threadName; assert.ok(first && first !== "work");
+  assert.deepEqual(chat.attachmentPaths, []);
+  assert.ok(setup.captureCharFrame().includes(`Created thread: ${first}`));
+  await command("/new");
+  const second = chat.threadName; assert.ok(second && second !== first && second !== "work");
+  await command("/new work");
+  assert.equal(chat.threadName, second);
+  assert.match(setup.captureCharFrame(), /already exists/);
+  await command("/switch");
+  const rows = popupRows(ui.picker).chunks.map(c => c.text).join("");
+  assert.ok(rows.includes(first)); assert.ok(rows.includes(`${second}  0 turns · current`));
+  assert.match(rows, /work/);
+  const reopened = new TuiChat(client, options);
+  await reopened.switchThread("work");
+  assert.deepEqual(reopened.attachmentPaths, ["keep.ts"], "existing thread kept its context");
+  assert.equal(calls, 0);
+});
+
 for (const opener of ["@", "/attach "]) {
   test(`file discovery is lazy, single-flight and cached when opened with ${opener}`, async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "ask-tui-lazy-index-"));

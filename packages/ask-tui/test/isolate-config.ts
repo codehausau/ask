@@ -7,6 +7,7 @@ import path from "node:path";
 
 const dir = mkdtempSync(path.join(tmpdir(), "ask-test-config-"));
 process.env["XDG_CONFIG_HOME"] = dir;
+process.env["ASK_STATE_DIR"] = path.join(dir, "state");
 // A custom config directory or inline config would be another layer.
 delete process.env["ASK_CONFIG"];
 delete process.env["ASK_CONFIG_CONTENT"];

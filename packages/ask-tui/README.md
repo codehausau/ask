@@ -463,8 +463,10 @@ Edit the recalled text and press Enter to submit. Arrows navigate an open
 picker first, and move between rows of multiline input before browsing history.
 `/clear` clears history, the visible transcript, pending edits and conversation
 usage counters, while keeping attachments, file exclusions, active skills and
-settings. In a named thread `/clear` also clears saved history. `/new` leaves
-a named thread intact and starts a temporary chat with no selections. Both destroy
+settings. In a named thread `/clear` also clears saved history. `/new` creates
+and selects an empty saved thread with an automatic name; `/new work` gives it
+a name of your choice. It appears in `/switch` and `/sessions` immediately.
+The previous named thread stays intact; unsaved temporary work is discarded. Both commands destroy
 the cleared transcript's native renderables and keep the selected theme and sidebar
 width for the current run. `/context`
 opens the context manager; `/help` lists commands; `/quit` or Ctrl+D exits.

@@ -16,7 +16,7 @@ Transient failures may retry the same request up to twice, without model-driven 
 /theme [name]  choose a theme; it is saved as your default in tui.json
 /switch  choose a saved thread    /switch <name>  save or resume by name    /sessions  list threads
 /clear  clear conversation and pending edits; keep attachments and skills
-/new  clear conversation, attachments and skills    /help    /quit
+/new [name]  create and select an empty saved thread    /help    /quit
 Enter selects an open mention, otherwise sends · Shift+Enter inserts a newline
 Type / for searchable commands · /context, /detach and /unskill open management popups
 Ctrl+C copies highlighted text (OSC52); without a selection it exits
@@ -53,9 +53,10 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
     await chat.clearConversation(); actions.clear();
     actions.addText("Conversation, transcript and pending edits cleared; attachments and skills kept.");
   }
-  else if (text === "/new") {
-    chat.reset(); actions.clear();
-    actions.addText("Started a new conversation; history, transcript, attachments, skills and pending edits cleared.");
+  else if (/^\/new(?:\s|$)/.test(text)) {
+    await chat.newThread(text.slice(4).trim() || undefined);
+    actions.clear();
+    actions.addText(`Created thread: ${terminalField(chat.threadName!)}. Use /switch to return to it.`);
   } else if (/^\/skills?(?:\s|$)/.test(text)) actions.openManager("skills", text.replace(/^\/skills?\s*/, ""));
   else if (text === "/unskill") actions.openManager("unskill");
   else if (text.startsWith("/unskill ")) {

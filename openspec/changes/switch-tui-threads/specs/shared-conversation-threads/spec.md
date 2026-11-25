@@ -44,7 +44,9 @@ The interfaces SHALL share named turns, compaction summaries, selected context, 
 - **WHEN** the user runs TUI `/clear` in `work`
 - **THEN** either interface reopening `work` sees no old turns and retains its selected context
 - **WHEN** the user instead runs TUI `/new`
-- **THEN** the TUI starts an empty temporary conversation and the saved `work` thread remains available
+- **THEN** the TUI creates and selects a distinct, automatically named, empty saved thread, immediately visible in `/switch` and `/sessions`; `work` remains available intact
+- **WHEN** the user runs `/new <name>` with a name already in use
+- **THEN** the TUI keeps the current selection and existing thread intact and offers `/switch <name>` to resume it
 
 ### Requirement: Restore the current selection, not historical attachments
 Both interfaces SHALL restore the currently selected files, folders, excluded files, and skills. They SHALL read content afresh for the next user request, under current context limits and filters. Restoring a missing reference SHALL NOT silently choose a different file or skill.

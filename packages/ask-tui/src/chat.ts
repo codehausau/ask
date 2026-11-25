@@ -1,4 +1,5 @@
 // UI-independent chat controller. Only submit() can ask the model, exactly once.
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { askOnce, buildRequest, DEFAULT_MODEL, type ChatClient, type HistoryMessage, type TokenField } from "@codehaus-au/ask/internal/chat";
@@ -150,14 +151,19 @@ export class TuiChat {
       ...(!names.length ? ["No saved threads in this project. Use /switch <name> to save one."] : []),
       ...names.map(t => `${t.name === this.threadName ? "*" : " "} ${terminalField(t.name)} (${t.turns} ${t.turns === 1 ? "turn" : "turns"})`)].join("\n");
   }
-  async switchThread(name: string): Promise<void> {
-    if (!isValidSessionName(name)) throw new Error("Usage: /switch <thread-name> (letters, digits, dot, dash, underscore; 1–64 characters).");
-    if (this.busy || this.pending.length) throw new Error("Finish the current request or resolve pending edits before switching.");
+  switchThread(name: string) { return this.openThread("/switch", name); }
+  newThread(name = `thread-${randomUUID().slice(-12)}`) { return this.openThread("/new", name); }
+
+  private async openThread(command: "/switch" | "/new", name: string): Promise<void> {
+    if (!isValidSessionName(name)) throw new Error(`Usage: ${command} <thread-name> (letters, digits, dot, dash, underscore; 1–64 characters).`);
+    if (this.busy) throw new Error("Finish the current request or write before changing threads.");
+    if (command === "/switch" && this.pending.length) throw new Error("Resolve pending edits before switching.");
     this.busy = true;
     try {
       const key = this.key(name);
       const destination = await readThread(key);
-      const carry = !this.named || this.unsaved;
+      if (command === "/new" && destination.session) throw new Error(`Thread ${name} already exists. Use /switch ${name} to resume it.`);
+      const carry = command === "/switch" && (!this.named || this.unsaved);
       if (destination.session && carry && (this.unsaved || this.record.turns.length || this.record.failedPrompts?.length ||
         this.attachments.length || this.skills.length || this.excludedFiles.size)) {
         throw new Error("Unsaved conversation: /switch to an unused name to save it, or /new to discard it.");
@@ -165,7 +171,8 @@ export class TuiChat {
       const next = { ...(destination.session ?? (carry ? { ...this.record, selection: this.selection() } : emptySession(this.scope, name))),
         name, updatedAt: new Date().toISOString() };
       const revision = await commitThread(key, next, destination.revision);
-      await writeCurrentSession(this.scope, name, key.env);
+      try { await writeCurrentSession(this.scope, name, key.env); }
+      catch (error) { throw new Error(`Thread ${name} was saved, but could not be selected: ${String(error)}`); }
       this.resetMemory();
       this.record = next; this.named = true; this.revision = revision; this.unsaved = false;
       this.attachments = sessionRefs(next).map(p => path.resolve(this.scope, p));
@@ -542,9 +549,5 @@ export class TuiChat {
     this.skills = [];
     this.files = [];
     this.excludedFiles.clear();
-  }
-  reset(): void {
-    if (this.busy) throw new Error("A request or write is already in progress.");
-    this.resetMemory(); this.named = false; this.revision = null; this.unsaved = false;
   }
 }

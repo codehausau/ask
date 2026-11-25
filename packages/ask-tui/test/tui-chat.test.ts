@@ -168,7 +168,7 @@ test("session stats track provider usage honestly, files, and reset without mode
     chat.detach("a.ts");
     assert.deepEqual(chat.sessionStats.files, []);
     assert.equal(requests.length, 3);
-    chat.reset();
+    await chat.newThread();
     assert.equal(chat.lastAnswer, null);
     assert.deepEqual({ ...chat.sessionStats }, {
       cwd, turns: 0, contextWindow: 1000, lastInput: null, lastOutput: null,
@@ -210,7 +210,7 @@ test("TUI skills are explicitly selected, composed in system instructions, and r
     await chat.submit("Use style only.");
     assert.doesNotMatch(String(requests[2]!.messages[0]!.content), /REVIEW_BODY/);
     assert.match(String(requests[2]!.messages[0]!.content), /STYLE_BODY/);
-    chat.reset();
+    await chat.newThread();
     assert.deepEqual(chat.activeSkillNames, []);
     assert.equal(requests.length, 3);
   } finally { await rm(cwd, { recursive: true, force: true }); }
@@ -321,7 +321,7 @@ test("individual files can be excluded from attached folders, restored, and expl
     assert.doesNotMatch(String(requests[5]!.messages.at(-1)!.content), /<file /);
     assert.throws(() => chat.detach("not-attached.ts"), /Not attached/);
     assert.equal(await readFile(path.join(cwd, "src", "a.ts"), "utf8"), "EXCLUDED_CONTENT");
-    chat.reset();
+    await chat.newThread();
     assert.deepEqual(chat.excludedFilePaths, []);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
@@ -431,7 +431,7 @@ test("ordinary chat retains attachments and allows unsolicited, user-approved up
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test("pending proposals must be resolved; reject and reset never ask or write", async () => {
+test("pending proposals must be resolved; reject and new thread never ask or write source files", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ask-tui-"));
   try {
     await writeFile(path.join(cwd, "a.ts"), "old\n");
@@ -448,7 +448,7 @@ test("pending proposals must be resolved; reject and reset never ask or write", 
     assert.equal(chat.pendingCount, 0);
     chat.detach("a.ts");
     assert.deepEqual(chat.attachmentPaths, []);
-    chat.reset();
+    await chat.newThread();
     assert.equal(requests.length, 1);
     assert.equal(await readFile(path.join(cwd, "a.ts"), "utf8"), "old\n");
   } finally { await rm(cwd, { recursive: true, force: true }); }

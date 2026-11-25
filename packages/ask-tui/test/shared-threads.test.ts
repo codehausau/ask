@@ -68,9 +68,12 @@ test("CLI/TUI handoff survives restart, context changes, and conflicts without a
   assert.equal((await readThread({ scope: cwd, env, name: "work" })).session!.turns.at(-1)!.question, "concurrent");
   await restarted.switchThread("recovered");
   assert.equal(restarted.prompts.at(-1), "unsaved answer");
-  restarted.reset();
+  await restarted.newThread();
   assert.deepEqual(restarted.prompts, []);
-  assert.equal(restarted.threadName, null);
+  const fresh = restarted.threadName;
+  assert.ok(fresh);
+  assert.equal(await readCurrentSession(cwd, env), fresh);
+  assert.ok((await ask("/sessions")).includes(fresh));
   await restarted.switchThread("docs");
   await restarted.clearConversation();
   assert.deepEqual((await readThread({ scope: cwd, name: "docs", env })).session?.turns, []);

@@ -9,7 +9,7 @@ The CLI can resume a named conversation, but the TUI loses its history and conte
 - Add local `/switch <name>` and `/sessions` commands to the TUI. Reuse the CLI's repository scope, thread names, store, and active-thread pointer.
 - Save and restore conversation turns and the current selection of files, folders, exclusions, and skills. Show the active thread and restored context before the next submission.
 - Add Bash-style prompt recall to the TUI input. Up recalls the user's previous prompt in the active thread; Down moves forward and restores the unfinished draft. Recall never submits a message.
-- Keep a plain TUI launch temporary. Explicitly naming a thread opts into saving it. Keep piped CLI requests one-shot unless the user explicitly enables sessions.
+- Keep a plain TUI launch temporary. Naming a thread or creating one with `/new` opts into saving it. Keep piped CLI requests one-shot unless the user explicitly enables sessions.
 - Never transfer pending edits, file snapshots, or approvals. Switching is local: it neither asks the model nor runs a command on the user's behalf.
 
 ## Capabilities

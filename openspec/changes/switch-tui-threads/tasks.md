@@ -17,7 +17,7 @@
 - [x] 3.1 Add temporary versus named state to `TuiChat`. Persist a named turn or selection change when it succeeds. Test temporary launch/exit leaves no new session record, naming a temporary conversation preserves it, and an occupied destination cannot overwrite it.
 - [x] 3.2 Wire `/switch <name>` and `/sessions` into `commands.ts`, picker, and help. Pass the precomputed scope from startup. Verify names and listings against the CLI, and assert listing/switching trigger zero provider calls, subprocesses, or source writes.
 - [x] 3.3 Restore transcript, summaries, context, and usage; show the active name or temporary status. Test a switch during a request, during a write, and with a pending proposal. Reopen a previous answer and assert its controls and callbacks cannot authorize a write.
-- [x] 3.4 Wire named `/clear` and `/new`, and update the TUI guide with a CLI/TUI handoff example. Verify `/clear` persists retained context and `/new` starts temporary without deleting the saved thread.
+- [x] 3.4 Wire named `/clear` and `/new`, and update the TUI guide with a CLI/TUI handoff example. Verify `/clear` persists retained context and `/new` creates a separately selectable saved thread without deleting the old one.
 - [x] 3.5 Add Up/Down prompt recall in the composer using the active thread's retained user questions. Document the keys alongside the existing picker and multiline controls. Test oldest/newest boundaries, draft restoration, repeated prompts, multiline edits, literal mentions, picker precedence, and edit-then-Enter. Assert zero provider calls while browsing and one logical completion on submission.
 
 ## 4. Cross-interface acceptance
