@@ -454,6 +454,9 @@ Switches cannot apply pending edits: resolve them before switching.
 
 With the composer focused, press **Up** for your last prompt, then older prompts
 from this thread. **Down** moves forward and restores your original draft.
+Prompts rejected by the provider (including HTTP 401) are also recallable.
+They don't count as answered turns or get sent as history on the next request.
+Like successful prompts, they're saved only in named threads.
 Edit the recalled text and press Enter to submit. Arrows navigate an open
 picker first, and move between rows of multiline input before browsing history.
 `/clear` clears history, the visible transcript, pending edits and conversation

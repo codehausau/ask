@@ -69,6 +69,52 @@ test("Up/Down recalls only active user prompts, restores the draft and never sub
   assert.equal(calls, 4);
 });
 
+test("401s leave prompts recallable without creating turns, leaking the key, or resending on arrow keys", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-401-recall-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const requests: OneShotRequest[] = [];
+  let started!: () => void, finish!: () => void;
+  const secondStarted = new Promise<void>(r => { started = r; });
+  const releaseSecond = new Promise<void>(r => { finish = r; });
+  const client: ChatClient = { chat: { completions: { async create(request) {
+    requests.push(request);
+    if (requests.length === 2) { started(); await releaseSecond; }
+    if (requests.length <= 2) throw Object.assign(new Error("Incorrect API key provided: PRIVATE-MARKER"), { status: 401 });
+    return { id: "stub", created: 0, model: "stub", object: "chat.completion", choices: [{
+      index: 0, finish_reason: "stop", logprobs: null, message: { role: "assistant", refusal: null, content: "OK" },
+    }] };
+  } } } };
+  const options = { cwd, env: { ASK_STATE_DIR: path.join(cwd, "state") } };
+  const chat = new TuiChat(client, options);
+  await chat.switchThread("work");
+  const setup = await createTestRenderer({ width: 110, height: 38 });
+  t.after(() => setup.dispose());
+  const ui = mountChatUI(setup.renderer, chat, "stub");
+  const draft = (s: string) => { ui.input.setText(s); ui.input.gotoBufferEnd(); };
+  const arrow = async (d: "up" | "down") => { setup.mockInput.pressArrow(d); await setup.flush(); return ui.input.plainText; };
+  draft("testing"); setup.mockInput.pressEnter(); await waitUntilIdle(ui); await setup.flush();
+  assert.equal(ui.input.plainText, "testing");
+  assert.match(setup.captureCharFrame(), /401:/);
+  assert.doesNotMatch(setup.captureCharFrame(), /PRIVATE-MARKER/);
+  draft("testing again"); setup.mockInput.pressEnter(); await secondStarted;
+  draft("unfinished"); finish(); await waitUntilIdle(ui); await setup.flush();
+  assert.equal(ui.input.plainText, "unfinished");
+  assert.match(setup.captureCharFrame(), /kept your current draft/);
+  assert.equal(await arrow("up"), "testing again"); assert.equal(await arrow("up"), "testing");
+  assert.equal(await arrow("down"), "testing again"); assert.equal(await arrow("down"), "unfinished");
+  assert.equal(chat.sessionStats.turns, 0); assert.equal(chat.savedTurns.length, 0);
+  assert.equal(requests.length, 2);
+  const reopened = new TuiChat(client, options);
+  await reopened.switchThread("work");
+  assert.deepEqual(reopened.prompts, ["testing", "testing again"]);
+  await reopened.submit("now authenticated");
+  assert.deepEqual(requests[2]!.messages.map(m => m.role), ["system", "user"]);
+  assert.equal(requests[2]!.messages.at(-1)!.content, "now authenticated");
+  assert.deepEqual(reopened.prompts, ["testing", "testing again", "now authenticated"]);
+  await reopened.clearConversation();
+  assert.deepEqual(reopened.prompts, []);
+});
+
 function localClipboardEnvironment(t: TestContext) {
   const keys = ["SSH_CONNECTION", "SSH_TTY"];
   const saved = keys.map((key) => process.env[key]);

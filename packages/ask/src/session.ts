@@ -70,6 +70,8 @@ export interface Session {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly turns: readonly SessionTurn[];
+  /** Composer recall only. A failed submission has no answer and is never a model turn. */
+  readonly failedPrompts?: readonly { readonly afterTurns: number; readonly text: string }[];
   /** Context retained independently of conversation turns by /clear. */
   readonly context?: { readonly refs: readonly string[]; readonly skills: readonly string[] };
   readonly selection?: ThreadSelection;
@@ -150,6 +152,9 @@ function isSession(value: unknown): value is Session {
     typeof candidate.scope === "string" &&
     typeof candidate.createdAt === "string" && typeof candidate.updatedAt === "string" && Number.isFinite(Date.parse(candidate.updatedAt)) &&
     Array.isArray(candidate.turns) && candidate.turns.every(isTurn) &&
+    (candidate.failedPrompts === undefined || (Array.isArray(candidate.failedPrompts) &&
+      candidate.failedPrompts.every((p, i, all) => p && typeof p.text === "string" && count(p.afterTurns) &&
+        p.afterTurns <= candidate.turns!.length && (i === 0 || all[i - 1]!.afterTurns <= p.afterTurns)))) &&
     (candidate.selection === undefined || isSelection(candidate.selection)) &&
     (candidate.context === undefined || (!!candidate.context && strings(candidate.context.refs) && strings(candidate.context.skills)))
   );
@@ -300,7 +305,7 @@ export async function clearSession(key: SessionKey, now: Date = new Date()): Pro
   if (!current) return null;
   const timestamp = now.toISOString();
   const cleared: Session = {
-    ...current, version: SESSION_VERSION, createdAt: timestamp, updatedAt: timestamp, turns: [],
+    ...current, version: SESSION_VERSION, createdAt: timestamp, updatedAt: timestamp, turns: [], failedPrompts: [],
     context: { refs: sessionRefs(current), skills: sessionSkills(current) },
   };
   await commitThread(key, cleared, revision, "clear");
@@ -350,6 +355,42 @@ export function sessionMessages(session: Session | null): ChatMessage[] {
   return messages;
 }
 
+/** Interleave provider failures with completed prompts for the composer, never for the API. */
+export function sessionPrompts(session: Session): string[] {
+  const prompts: string[] = [];
+  const failed = session.failedPrompts ?? [];
+  let failure = 0;
+  for (let i = 0; i <= session.turns.length; i++) {
+    while (failed[failure]?.afterTurns === i) prompts.push(failed[failure++]!.text);
+    const turn = session.turns[i];
+    if (turn && !turn.summary && turn.question && turn.question !== "(piped input)") prompts.push(turn.prompt ?? turn.question);
+  }
+  return prompts;
+}
+
+export function rememberFailedPrompt(session: Session, text: string): Session {
+  // No turn/token budget advances during repeated authentication failures.
+  // Bound the separate recall window; always keep the newest prompt editable.
+  const failed = [...(session.failedPrompts ?? []), { afterTurns: session.turns.length, text }].slice(-100);
+  let bytes = 0;
+  let start = failed.length;
+  while (start > 0) {
+    bytes += Buffer.byteLength(failed[start - 1]!.text, "utf8");
+    if (bytes > 256 * 1024 && start < failed.length) break;
+    start--;
+  }
+  return { ...session, failedPrompts: failed.slice(start) };
+}
+
+/** Keep recall positions aligned when either interface trims the oldest turns. */
+export function dropOldestTurns(session: Session, dropped: number): Session {
+  if (!dropped) return session;
+  return { ...session, turns: session.turns.slice(dropped), ...(session.failedPrompts && {
+    failedPrompts: session.failedPrompts.filter(p => p.afterTurns >= dropped)
+      .map(p => ({ ...p, afterTurns: p.afterTurns - dropped })),
+  }) };
+}
+
 /** System prompt for `/compact`. Terse, factual, no invention. */
 export const COMPACT_SYSTEM =
   "You compact a developer's question-and-answer thread about a codebase into " +
@@ -387,6 +428,7 @@ export function applyCompaction(
   return {
     ...session,
     updatedAt: timestamp,
+    failedPrompts: [],
     turns: [
       {
         at: timestamp,
@@ -438,7 +480,7 @@ export function pruneSession(
     dropped += 1;
   }
 
-  return { session: { ...session, turns }, dropped };
+  return { session: dropOldestTurns(session, dropped), dropped };
 }
 
 export interface AppendOptions {
@@ -472,6 +514,7 @@ export function appendTurn(session: Session | null, options: AppendOptions): Ses
     updatedAt: timestamp,
     ...(session?.context ? { context: session.context } : {}),
     ...(session?.selection ? { selection: session.selection } : {}),
+    ...(session?.failedPrompts ? { failedPrompts: session.failedPrompts } : {}),
     turns: [...(session?.turns ?? []), turn],
   };
 }
@@ -640,7 +683,7 @@ export async function archiveSession(
   const key = { scope: session.scope, name: session.name, env };
   const name = await locked(key, async () => {
     if (expected !== undefined) checkRevision(await readThread(key), expected);
-    if (!session.turns.length) { await removeThreadFiles(key); return null; }
+    if (!session.turns.length && !session.failedPrompts?.length) { await removeThreadFiles(key); return null; }
     const base = `${session.name}-${archiveSuffix(now)}`;
     for (let attempt = 1; attempt <= 60; attempt++) {
       const name = attempt === 1 ? base : `${base}-${attempt}`;

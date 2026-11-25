@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { archiveSession, clearSession, commitThread, emptySession, listSessions, readThread, resetSession, sessionMessages, sessionPath } from "../src/session.ts";
+import {
+  appendTurn, applyCompaction, archiveSession, clearSession, commitThread, dropOldestTurns, emptySession,
+  listSessions, readThread, rememberFailedPrompt, resetSession, sessionMessages, sessionPath, sessionPrompts,
+} from "../src/session.ts";
 
 async function fixture(t: TestContext) {
   const dir = await mkdtemp(path.join(tmpdir(), "ask-thread-"));
@@ -25,6 +28,21 @@ test("current selection and turns round-trip without materializing content or ap
   assert.deepEqual(await readThread(key), { revision, session: thread });
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), thread);
   if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
+});
+
+test("CLI handoff keeps failed TUI inputs in recall order but out of conversation history", async t => {
+  const { key } = await fixture(t);
+  const first = rememberFailedPrompt(emptySession(key.scope, key.name), "failed before first");
+  const answered = appendTurn(first, { ...key, question: "first", refs: [], answer: "one" });
+  const next = appendTurn(rememberFailedPrompt(answered, "failed between"), { ...key, question: "second", refs: [], answer: "two" });
+  const thread = rememberFailedPrompt(next, "failed last");
+  assert.deepEqual(sessionPrompts(thread), ["failed before first", "first", "failed between", "second", "failed last"]);
+  assert.deepEqual(sessionPrompts(dropOldestTurns(thread, 1)), ["failed between", "second", "failed last"]);
+  assert.deepEqual(sessionMessages(thread).map(m => m.content), ["first", "one", "second", "two"]);
+  assert.deepEqual(sessionPrompts(applyCompaction(thread, "summary")), []);
+  await commitThread(key, thread, null);
+  const cleared = await clearSession(key);
+  assert.ok(cleared); assert.deepEqual(sessionPrompts(cleared), []);
 });
 
 test("legacy summary and cleared context survive migration; corrupt v2 never falls back", async t => {

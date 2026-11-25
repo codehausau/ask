@@ -9,7 +9,8 @@ import { terminalField } from "@codehaus-au/ask/internal/terminal";
 import { hasGlobMagic, resolveRef, type Resolution } from "@codehaus-au/ask/internal/refs";
 import {
   commitThread, DEFAULT_SESSION_MAX_TOKENS, emptySession, estimateTokens, isValidSessionName,
-  listSessions, readThread, scopedPath, sessionMessages, sessionRefs, sessionSkills, writeCurrentSession,
+  dropOldestTurns, listSessions, readThread, rememberFailedPrompt, scopedPath, sessionMessages, sessionPrompts,
+  sessionRefs, sessionSkills, writeCurrentSession,
   type Session, type SessionTurn, type ThreadSelection,
 } from "@codehaus-au/ask/internal/session";
 import { chatRefs } from "./mentions.ts";
@@ -91,8 +92,6 @@ export class TuiChat {
   private attachments: string[] = [];
   private pending: ProposedUpdate[] = [];
   private reviewed = new Set<string>();
-  /** Dropped history not yet reported, including drops before a failed request. */
-  private unreportedDrops = 0;
   private busy = false;
   private skills: { name: string; file: string | null; known?: LoadedSkill }[] = [];
   private turns = 0;
@@ -126,7 +125,7 @@ export class TuiChat {
   get threadName(): string | null { return this.named ? this.record.name : null; }
   get savedTurns(): readonly SessionTurn[] { return this.record.turns; }
   get prompts(): string[] {
-    return this.record.turns.filter(t => !t.summary && t.question && t.question !== "(piped input)").map(t => t.prompt ?? t.question);
+    return sessionPrompts(this.record);
   }
   private get scope(): string { return this.options.scope ?? this.options.cwd; }
   private key(name: string) { return { scope: this.scope, name, env: this.options.env ?? process.env }; }
@@ -157,7 +156,8 @@ export class TuiChat {
       const key = this.key(name);
       const destination = await readThread(key);
       const carry = !this.named || this.unsaved;
-      if (destination.session && carry && (this.unsaved || this.record.turns.length || this.attachments.length || this.skills.length || this.excludedFiles.size)) {
+      if (destination.session && carry && (this.unsaved || this.record.turns.length || this.record.failedPrompts?.length ||
+        this.attachments.length || this.skills.length || this.excludedFiles.size)) {
         throw new Error("Unsaved conversation: /switch to an unused name to save it, or /new to discard it.");
       }
       const next = { ...(destination.session ?? (carry ? { ...this.record, selection: this.selection() } : emptySession(this.scope, name))),
@@ -231,7 +231,7 @@ export class TuiChat {
   }
 
   /** Oldest messages go first; history always restarts at a user message. */
-  private trimHistory(budget: number): void {
+  private historyForRequest(budget: number): { record: Session; dropped: number } {
     const weight = (messages: HistoryMessage[]) => messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
     let total = weight(sessionMessages(this.record));
     let dropped = 0;
@@ -241,8 +241,7 @@ export class TuiChat {
       total -= weight(messages);
       dropped += messages.length;
     }
-    if (start) this.record = { ...this.record, turns: this.record.turns.slice(start) };
-    this.unreportedDrops += dropped;
+    return { record: dropOldestTurns(this.record, start), dropped };
   }
 
   /** Pending proposals named by path (all when none are named). */
@@ -345,23 +344,34 @@ export class TuiChat {
       const prompt = attachmentMessage(text, context);
       const instructions = await this.options.instructions?.() ?? "";
       const system = [this.options.system, instructions, renderSkills(skills), UPDATE_SYSTEM].filter(Boolean).join("\n\n");
-      this.trimHistory(this.historyBudget(estimateTokens(system) + estimateTokens(prompt)));
-      const result = await askOnce(this.client, buildRequest({
+      const { record, dropped: historyDropped } = this.historyForRequest(this.historyBudget(estimateTokens(system) + estimateTokens(prompt)));
+      const request = buildRequest({
         prompt,
         model: this.options.model ?? DEFAULT_MODEL,
         system,
-        history: sessionMessages(this.record),
+        history: sessionMessages(record),
         baseURL: this.options.baseURL,
         maxTokens: this.options.maxTokens,
         temperature: this.options.temperature,
         tokenField: this.options.tokenField,
-      }));
+      });
+      let result: Awaited<ReturnType<typeof askOnce>>;
+      try { result = await askOnce(this.client, request); }
+      catch (error) {
+        this.record = rememberFailedPrompt(this.record, text);
+        // A provider's 401 message can echo the rejected key. Never display or store it.
+        const failure = error && typeof error === "object" && "status" in error && error.status === 401
+          ? new Error("401: The endpoint rejected your API credentials. Check the API key and endpoint, then restart ask-tui.") : error;
+        try { await this.persist(); }
+        catch (saveError) { throw new Error(`${String(failure)}. Prompt available in this chat but not saved: ${String(saveError)}`); }
+        throw failure;
+      }
       this.turns++;
       this.lastInput = result.usage.input;
       this.lastOutput = result.usage.output;
       if (result.usage.input !== null) { this.totalInput += result.usage.input; this.inputTurns++; }
       if (result.usage.output !== null) { this.totalOutput += result.usage.output; this.outputTurns++; }
-      this.record = { ...this.record, turns: [...this.record.turns, { at: new Date().toISOString(),
+      this.record = { ...record, turns: [...record.turns, { at: new Date().toISOString(),
         question: unescapeMentions(text), prompt: text, refs: [], answer: result.text, usage: result.usage }] };
       let saveError: string | undefined;
       try { await this.persist(); } catch (error) { saveError = `Answer not saved: ${String(error)}. Use /switch with an unused name to keep it.`; }
@@ -376,8 +386,6 @@ export class TuiChat {
         proposalError = error instanceof Error ? error.message : String(error);
       }
       this.reviewed.clear();
-      const historyDropped = this.unreportedDrops;
-      this.unreportedDrops = 0;
       return {
         text: result.text, context, proposalError, missing, historyDropped, ...(saveError ? { saveError } : {}),
         status: `${result.model} · ${context.blocks.length} file(s) · skills ${skills.map((skill) => terminalField(skill.name)).join(", ") || "none"} · tokens ${result.usage.input ?? "?"} in / ${result.usage.output ?? "?"} out`,
@@ -524,7 +532,6 @@ export class TuiChat {
     this.totalOutput = 0;
     this.inputTurns = 0;
     this.outputTurns = 0;
-    this.unreportedDrops = 0;
   }
 
   private resetMemory(): void {
