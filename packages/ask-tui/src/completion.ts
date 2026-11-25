@@ -1,5 +1,6 @@
 import { StyledText, bg, fg, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { rankMatch } from "@codehaus-au/ask/internal/refs";
+import { isValidSessionName } from "@codehaus-au/ask/internal/session";
 import { terminalField } from "@codehaus-au/ask/internal/terminal";
 import type { SkillSummary } from "@codehaus-au/ask/internal/skills";
 import type { TuiChat } from "./chat.ts";
@@ -9,7 +10,7 @@ import { THEME_NAMES, themeDescription, themeModes, type ThemeMode } from "./the
 import { activeMention, serializeMention } from "./mentions.ts";
 import { filterPopupItems, isFileCandidateVisible, SLASH_COMMANDS, type PopupItem } from "./picker.ts";
 
-export type ManagerMode = "context" | "attach" | "detach" | "unskill" | "skill" | "skills" | "theme";
+export type ManagerMode = "context" | "attach" | "detach" | "unskill" | "skill" | "skills" | "theme" | "switch";
 export interface UIState { working: boolean; alive: boolean }
 
 /** Composer popups own their selection, async catalogs and temporary previews. */
@@ -23,7 +24,9 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
   const { input, status, picker, pickerMetadata, pickerRows, pickerHint } = layout;
   let candidates: readonly string[] = [];
   let matches: PopupItem[] = [];
-  let mode: "mention" | "commands" | "detach" | "unskill" | "context" | "skills" | "files" | "themes" = "mention";
+  let mode: "mention" | "commands" | "detach" | "unskill" | "context" | "skills" | "files" | "themes" | "threads" = "mention";
+  // One directory scan per opening, shared by all keystrokes while filtering.
+  let threadList: { items: PopupItem[]; loading: boolean; error: string } | undefined;
   let pickerPrefix = "";
   let skillCatalog: readonly SkillSummary[] = [];
   let skillsReady = false;
@@ -109,18 +112,47 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
     actions.applyTheme(previous.name, previous.mode);
   }
 
+  function threadItems(query: string): PopupItem[] {
+    if (!threadList) {
+      threadList = { items: [], loading: true, error: "" };
+      const list = threadList;
+      void chat.listThreads().then(threads => {
+        list.items = threads.filter(t => isValidSessionName(t.name)).map(t => ({
+          kind: "thread", value: t.name, label: t.name,
+          description: `${t.turns} ${t.turns === 1 ? "turn" : "turns"}${t.name === chat.threadName ? " · current" : ""}`,
+        }));
+      }, error => { list.error = `Could not list threads: ${terminalField(String(error))}`; }).finally(() => {
+        list.loading = false;
+        if (threadList === list && state.alive) refresh();
+      });
+    }
+    const rows = threadList.items.filter(t => t.value.toLowerCase().includes(query.toLowerCase()));
+    // Enter on an explicitly typed name always uses that exact name, even
+    // when it is a prefix of another thread or the scan hasn't finished yet.
+    if (isValidSessionName(query)) {
+      const exact = rows.findIndex(t => t.value === query);
+      const item = exact >= 0 ? rows.splice(exact, 1)[0]! : { kind: "thread" as const, value: query, label: query,
+        description: threadList.loading || threadList.error ? "Open or create thread" : "Create new thread" };
+      rows.unshift(item);
+    }
+    return rows;
+  }
+
   function refresh() {
     if (!state.alive) return;
     const prefix = input.editBuffer.getTextRange(0, input.cursorOffset);
+    const command = prefix === input.plainText ? /^\/(attach|detach|unskill|context|skills?|theme|switch)\s+([^\n]*)$/.exec(prefix) : null;
+    if (command?.[1] !== "switch" || state.working || prefix === dismissedAt) threadList = undefined;
     if (state.working || prefix === dismissedAt) { cancelThemePreview(); matches = []; picker.visible = false; return; }
     const previous = matches[selected];
     const oldMode = mode;
-    const command = prefix === input.plainText ? /^\/(attach|detach|unskill|context|skills?|theme)\s+([^\n]*)$/.exec(prefix) : null;
     if (command?.[1] !== "theme") cancelThemePreview();
     let startingThemePicker = false;
     if (command) {
       const query = command[2]!.trim().replace(/^@/, "").replace(/^["']/, "").replace(/["']$/, "");
-      if (command[1] === "theme") {
+      if (command[1] === "switch") {
+        mode = "threads"; matches = threadItems(command[2]!.trim());
+      } else if (command[1] === "theme") {
         mode = "themes"; startingThemePicker = themeBeforePreview === null;
         themeBeforePreview ??= { name: theme.name, mode: theme.mode };
         matches = filterPopupItems(THEME_NAMES.flatMap((name): PopupItem[] => themeModes(name).map((variant) => ({
@@ -203,7 +235,9 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
           ? [matches.some((item) => item.kind === "detach") ? "  … more files (↑/↓)" : "  No matching files."] : []),
       ];
     } else rows = matches.length ? visible.map(renderItem)
-      : [mode === "mention" ? loadingCandidates ? "Loading files/folders…" : pickerError || "No indexed matches; you can still type an exact @path."
+      : [mode === "threads" ? threadList?.loading ? "Loading saved threads…" : threadList?.error ||
+          (input.plainText.trim() === "/switch" ? "No saved threads in this project. Type a name to create one." : "Use 1–64 letters, digits, dots, dashes or underscores.")
+        : mode === "mention" ? loadingCandidates ? "Loading files/folders…" : pickerError || "No indexed matches; you can still type an exact @path."
         : mode === "skills" ? loadingSkills ? "Loading skills…" : skillLoadError || "No matching skills."
           : mode === "unskill" ? chat.activeSkillNames.length ? "No matching skills." : "No skills attached."
             : mode === "detach" ? hasFiles ? "No matching files." : "No files attached."
@@ -220,8 +254,9 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
       // Keep the newline outside the background span.
       return index < rows.length - 1 ? [chunk, fg("#e2e8f0")("\n")] : [chunk];
     }));
-    picker.title = { mention: "Files / folders", commands: "Commands", detach: "Detach files / folders", unskill: "Remove skills", context: "Manage context", skills: "Select skills", files: "Select files / folders", themes: "Select theme" }[mode];
+    picker.title = { mention: "Files / folders", commands: "Commands", detach: "Detach files / folders", unskill: "Remove skills", context: "Manage context", skills: "Select skills", files: "Select files / folders", themes: "Select theme", threads: "Switch thread" }[mode];
     pickerHint.content = mode === "mention" ? "↑↓ move · Enter/Tab select · Esc close"
+      : mode === "threads" ? "↑↓ choose · Enter switch · Tab complete · type a name · Esc close"
       : mode === "commands" ? "↑↓ move · Enter run · Tab complete · Esc close"
         : mode === "themes" ? "↑↓ preview · Enter/Tab keep · ✓ current · Esc cancel"
           : mode === "skills" ? "↑↓ move · Enter toggle · ✓ active · type to filter · Esc close"
@@ -272,14 +307,16 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
     if (!item) return;
     if (item.kind === "mention") { completeMention(); return; }
     if (item.kind === "command") {
-      if (item.value === "/switch") {
-        input.setText("/switch "); input.gotoBufferEnd(); picker.visible = false; return;
-      }
-      if (["/context", "/attach", "/detach", "/unskill", "/skill", "/skills", "/theme"].includes(item.value)) {
+      if (["/context", "/attach", "/detach", "/unskill", "/skill", "/skills", "/theme", "/switch"].includes(item.value)) {
         openManager(item.value.slice(1) as ManagerMode); return;
       }
       input.setText(item.value + (run ? "" : " ")); input.gotoBufferEnd();
       if (run) void actions.submit(); else { dismissedAt = input.plainText; picker.visible = false; }
+      return;
+    }
+    if (item.kind === "thread") {
+      input.setText(`/switch ${item.value}`); input.gotoBufferEnd();
+      if (run) await actions.submit(); else refresh();
       return;
     }
     if (item.kind === "attach") { void toggle(item); return; }
@@ -314,6 +351,7 @@ export function createCompletion(renderer: CliRenderer, chat: TuiChat, layout: C
     dismiss() { dismissedAt = input.editBuffer.getTextRange(0, input.cursorOffset); picker.visible = false; matches = []; },
     contentChanged() { dismissedAt = ""; refresh(); },
     get loadingSkills() { return loadingSkills; },
+    get loadingThreads() { return threadList?.loading ?? false; },
     get loadingCandidates() { return loadingCandidates; },
     handleKey(key: KeyEvent) {
       if (!state.working && key.sequence === "@" && dismissedAt && mention()?.prefix === dismissedAt) {

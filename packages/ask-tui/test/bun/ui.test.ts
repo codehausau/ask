@@ -124,15 +124,58 @@ function localClipboardEnvironment(t: TestContext) {
   }));
 }
 
-async function waitUntilIdle(ui: { readonly working: boolean; readonly pasting?: boolean; readonly loadingSkills?: boolean; readonly loadingCandidates?: boolean }) {
-  for (let tries = 0; tries < 200 && (ui.working || ui.pasting || ui.loadingSkills || ui.loadingCandidates); tries++) {
+async function waitUntilIdle(ui: { readonly working: boolean; readonly pasting?: boolean; readonly loadingSkills?: boolean; readonly loadingCandidates?: boolean; readonly loadingThreads?: boolean }) {
+  for (let tries = 0; tries < 200 && (ui.working || ui.pasting || ui.loadingSkills || ui.loadingCandidates || ui.loadingThreads); tries++) {
     await new Promise((done) => setTimeout(done, 10));
   }
   assert.equal(ui.working, false, "request/write should complete");
   assert.ok(!ui.pasting, "clipboard read should complete");
   assert.ok(!ui.loadingSkills, "skill discovery should complete");
   assert.ok(!ui.loadingCandidates, "file discovery should complete");
+  assert.ok(!ui.loadingThreads, "thread listing should complete");
 }
+
+test("/switch browses saved project threads, cancels locally, and accepts an exact new name", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-switch-picker-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const env = { ASK_STATE_DIR: path.join(cwd, "state") };
+  let calls = 0;
+  const client: ChatClient = { chat: { completions: { async create() { calls++; throw new Error("unexpected request"); } } } };
+  const chat = new TuiChat(client, { cwd, env });
+  const setup = await createTestRenderer({ width: 110, height: 38, kittyKeyboard: true });
+  t.after(() => setup.dispose());
+  const ui = mountChatUI(setup.renderer, chat, "stub");
+  const draft = async (s: string) => { ui.input.setText(s); ui.input.gotoBufferEnd(); await setup.flush(); };
+  const enter = async () => { setup.mockInput.pressEnter(); await waitUntilIdle(ui); await setup.flush(); };
+  const rows = () => popupRows(ui.picker).chunks.map(c => c.text).join("");
+  await draft("/switch"); await enter();
+  assert.ok(ui.picker.visible);
+  assert.match(rows(), /No saved threads.*Type a name/);
+  setup.mockInput.pressEscape(); await setup.flush();
+  assert.equal(ui.picker.visible, false);
+  assert.equal(chat.threadName, null);
+
+  const other = new TuiChat(client, { cwd, env });
+  await other.switchThread("workshop"); await other.switchThread("docs");
+  await new TuiChat(client, { cwd: path.join(cwd, "unrelated"), env }).switchThread("unrelated");
+  await draft("/swi"); setup.mockInput.pressTab(); await waitUntilIdle(ui); await setup.flush();
+  assert.ok(ui.picker.visible, setup.captureCharFrame()); assert.match(rows(), /docs/); assert.match(rows(), /workshop/); assert.doesNotMatch(rows(), /unrelated/);
+  const wanted = /› docs\b/.test(rows()) ? "workshop" : "docs";
+  setup.mockInput.pressArrow("down"); await setup.flush();
+  assert.equal(chat.threadName, null);
+  await enter();
+  assert.equal(chat.threadName, wanted); assert.equal(ui.picker.visible, false);
+
+  await draft("/switch "); await waitUntilIdle(ui); await setup.flush();
+  assert.match(rows(), new RegExp(`${wanted}\\s+0 turns · current`));
+  setup.mockInput.pressEscape(); await setup.flush();
+  assert.equal(chat.threadName, wanted);
+  await draft("/switch work"); await waitUntilIdle(ui); await setup.flush();
+  assert.match(rows(), /› work\s+Create new thread/);
+  await enter();
+  assert.equal(chat.threadName, "work", "a typed name does not accidentally resume a longer match");
+  assert.equal(calls, 0);
+});
 
 for (const opener of ["@", "/attach "]) {
   test(`file discovery is lazy, single-flight and cached when opened with ${opener}`, async () => {

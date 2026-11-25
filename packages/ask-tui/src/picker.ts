@@ -14,13 +14,13 @@ export const SLASH_COMMANDS = [
   { value: "/clear", description: "Clear conversation and pending edits; keep attachments and skills" },
   { value: "/new", description: "Clear conversation, attachments and skills" },
   { value: "/sessions", description: "List saved threads for this project" },
-  { value: "/switch", description: "Save or resume a named thread" },
+  { value: "/switch", description: "Choose a saved thread or enter a new name" },
   { value: "/help", description: "Show commands and keyboard shortcuts" },
   { value: "/quit", description: "Exit the TUI" },
   { value: "/exit", description: "Exit the TUI (alias of /quit)" },
 ] as const;
 
-export type PopupKind = "mention" | "command" | "skill" | "attach" | "detach" | "unskill" | "restore" | "open-skills" | "open-files" | "theme";
+export type PopupKind = "mention" | "command" | "skill" | "attach" | "detach" | "unskill" | "restore" | "open-skills" | "open-files" | "theme" | "thread";
 export interface PopupItem {
   readonly kind: PopupKind;
   readonly value: string;

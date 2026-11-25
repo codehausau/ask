@@ -229,6 +229,7 @@ export function mountChatUI(renderer: CliRenderer, chat: TuiChat, model: string,
     get working() { return state.working; },
     get pasting() { return clipboard.pasting; },
     get loadingSkills() { return completion!.loadingSkills; },
+    get loadingThreads() { return completion!.loadingThreads; },
     get loadingCandidates() { return completion!.loadingCandidates; },
     get theme() { return { name: theme.name, mode: theme.mode }; },
   };

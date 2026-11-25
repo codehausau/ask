@@ -855,7 +855,7 @@ ask /clear '<prompt>' # clear history, keep context, then ask
 ask /reset            # throw the current thread away
 ask /session          # show the current thread, no API call
 ask /sessions         # list this repository's threads
-ask /switch <name>    # switch thread, creating it if new
+ask /switch [name]    # list threads, or switch to a name (creating it if new)
 ask /write <path> '<prompt>'     # edit that file (@path accepted too)
 ask /diff  <path> '<prompt>'     # preview that edit
 ask /create <path> '<prompt>'   # write a new file

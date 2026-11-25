@@ -147,7 +147,9 @@ def main():
             os.write(master, b"/sessions\r")
             wait_for(lambda: b"smoke-work (1 turn)" in output, "shared thread listing")
             output.clear()
-            os.write(master, b"/switch smoke-work\r")
+            os.write(master, b"/switch\r")
+            wait_for(lambda: b"Switch thread" in output and b"smoke-work" in output, "choose a saved thread")
+            os.write(master, b"smoke-work\r")
             wait_for(lambda: b"Thread: smoke-work" in output, "resumed conversation")
             assert target.read_text() == "const x = 2;\n"
             assert len(requests) == 3, "thread commands must never call the provider"

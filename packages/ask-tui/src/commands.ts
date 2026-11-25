@@ -14,7 +14,7 @@ Transient failures may retry the same request up to twice, without model-driven 
 /unskill [name]  choose/remove an active skill (instructions only; no scripts)
 /copy  copy the last answer (Markdown) to your terminal clipboard
 /theme [name]  choose a theme; it is saved as your default in tui.json
-/switch <name>  save or resume a shared CLI/TUI thread    /sessions  list threads
+/switch  choose a saved thread    /switch <name>  save or resume by name    /sessions  list threads
 /clear  clear conversation and pending edits; keep attachments and skills
 /new  clear conversation, attachments and skills    /help    /quit
 Enter selects an open mention, otherwise sends · Shift+Enter inserts a newline
@@ -42,6 +42,7 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
   if (text === "/quit" || text === "/exit") { actions.quit(); return "return"; }
   if (text === "/help") actions.addText(TUI_HELP);
   else if (text === "/sessions") actions.addText(await chat.threads());
+  else if (text === "/switch") actions.openManager("switch");
   else if (/^\/switch(?:\s|$)/.test(text)) {
     await chat.switchThread(text.slice(7).trim());
     actions.clear();

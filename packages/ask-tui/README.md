@@ -446,7 +446,9 @@ Safety rules:
 
 This initial TUI supports updates to existing files only. Use `ask /create` for
 new files. The TUI starts temporary. `/sessions` lists saved threads in this
-repository; `/switch work` resumes the same thread as `ask --session work`.
+repository. Enter `/switch` to browse them: **↑/↓** highlights a thread,
+**Enter** opens it, and **Esc** closes the picker. Typing `/switch work`
+directly resumes the same thread as `ask --session work`, or creates it if new.
 Switch to an unused name to save a temporary conversation. To open an existing
 thread instead, first save or discard nonempty temporary work. After selection,
 turns and context changes are saved locally; old answers have no Apply controls.

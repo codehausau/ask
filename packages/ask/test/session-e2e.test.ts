@@ -488,8 +488,9 @@ test("/switch makes a thread stick across invocations", async () => {
 
     // Switching again isolates the threads.
     await runCli(["/switch", "docs"], base);
-    assert.match(await runCli(["/session"], base), /no active thread/);
+    assert.match(await runCli(["/session"], base), /thread docs\s+0 turn\(s\)/);
     await runCli(["/switch", "review"], base);
+    assert.match(await runCli(["/switch"], base), /docs\s+0 turn/, "empty named threads remain discoverable after switching away");
     assert.match(await runCli(["/session"], base), /thread review\s+1 turn\(s\)/);
   } finally {
     await endpoint.close();
@@ -516,14 +517,14 @@ test("/sessions lists the threads and marks the active one", async () => {
     assert.doesNotMatch(listing, /\*\s+alpha/);
     // Listing calls nothing.
     const before = endpoint.requests.length;
-    await runCli(["/sessions"], base);
+    assert.equal(await runCli(["/switch"], base), listing);
     assert.equal(endpoint.requests.length, before);
   } finally {
     await endpoint.close();
   }
 });
 
-test("ASK_SESSION names a thread, and /switch is rejected without a name", async () => {
+test("ASK_SESSION names a thread, and /switch validates explicit names", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
   const base = { cwd, state, url: endpoint.url };
@@ -533,7 +534,6 @@ test("ASK_SESSION names a thread, and /switch is rejected without a name", async
     const output = await runCli(["/session"], { ...base, env: { ASK_SESSION: "envthread" } });
     assert.match(output, /thread envthread\s+1 turn\(s\)/);
 
-    await assert.rejects(() => runCli(["/switch"], base), /needs a thread name/);
     await assert.rejects(() => runCli(["/switch", "bad name"], base), /invalid thread name|needs a name/);
   } finally {
     await endpoint.close();

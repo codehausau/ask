@@ -17,6 +17,11 @@ The TUI SHALL support `/switch <name>` and `/sessions` using the CLI's thread na
 - **WHEN** the user starts a new TUI and runs `/sessions` in the same repository
 - **THEN** the list includes named threads saved by either interface, excludes other repositories, and leaves the active conversation unchanged
 
+#### Scenario: Choose a thread without remembering its name
+- **WHEN** the user enters `/switch` without a name in the TUI
+- **THEN** a picker lists this repository's saved threads, including newly named empty threads, and marks the current one
+- **AND** browsing or cancelling leaves the conversation unchanged; confirming a name uses the same switch operation as `/switch <name>`
+
 ### Requirement: Explicit persistence
 A plain TUI launch SHALL start temporary, even if the CLI has a current thread. Selecting an unused name from a temporary conversation SHALL save that conversation under the name. Selecting an existing name SHALL NOT discard a nonempty temporary conversation or append it to the destination.
 

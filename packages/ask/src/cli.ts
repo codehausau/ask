@@ -85,7 +85,7 @@ import {
   listSessions,
   resolveSessionName,
   writeCurrentSession,
-  commitThread, readThread, scopedPath, sessionBackupPath,
+  commitThread, emptySession, readThread, scopedPath, sessionBackupPath,
   buildCompactionPrompt,
   COMPACT_SYSTEM,
   DEFAULT_SESSION_MAX_TOKENS,
@@ -138,7 +138,7 @@ Sessions
   ask /reset             throw the current thread away
   ask /session           show the current thread, no API call
   ask /sessions          list the threads for this repository
-  ask /switch <name>     switch to a thread, creating it if new
+  ask /switch [name]     list threads, or switch to a name (creating it if new)
   ask /write '<prompt>'  edit the single attached file (alias of --write)
   ask /diff '<prompt>'   preview that edit without writing (alias of --diff)
   ask /create <path> '<prompt>'
@@ -622,7 +622,7 @@ async function main(argv: string[]): Promise<number> {
 
   // A leading /verb maps onto the flag of the same name. A few take a value,
   // which is the next positional: `ask /switch docs`.
-  const firstPositional = positionals[0];
+  const firstPositional = positionals[0] === "/switch" && positionals.length === 1 ? "/sessions" : positionals[0];
   if (firstPositional !== undefined && firstPositional in VERBS) {
     const target = VERBS[firstPositional]!;
     const expects = VERBS_WITH_VALUE.get(firstPositional);
@@ -806,7 +806,7 @@ async function main(argv: string[]): Promise<number> {
     }
     const key = { scope, name: switchTo };
     const { session: target, revision } = await readThread(key);
-    if (target) await commitThread(key, { ...target, updatedAt: new Date().toISOString() }, revision);
+    await commitThread(key, target ? { ...target, updatedAt: new Date().toISOString() } : emptySession(scope, switchTo), revision);
     await writeCurrentSession(scope, switchTo);
     status.note(
       target

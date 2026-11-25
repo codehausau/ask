@@ -143,9 +143,11 @@ export class TuiChat {
     this.revision = await commitThread(this.key(this.record.name), this.record, this.revision, operation);
     this.unsaved = false;
   }
+  listThreads() { return listSessions(this.scope, this.options.env); }
   async threads(): Promise<string> {
-    const names = await listSessions(this.scope, this.options.env);
+    const names = await this.listThreads();
     return [`Active: ${terminalField(this.threadName ?? "(temporary)")}`,
+      ...(!names.length ? ["No saved threads in this project. Use /switch <name> to save one."] : []),
       ...names.map(t => `${t.name === this.threadName ? "*" : " "} ${terminalField(t.name)} (${t.turns} ${t.turns === 1 ? "turn" : "turns"})`)].join("\n");
   }
   async switchThread(name: string): Promise<void> {
