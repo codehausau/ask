@@ -22,6 +22,37 @@ The TUI SHALL support `/switch <name>` and `/sessions` using the CLI's thread na
 - **THEN** a picker lists this repository's saved threads, including newly named empty threads, and marks the current one
 - **AND** browsing or cancelling leaves the conversation unchanged; confirming a name uses the same switch operation as `/switch <name>`
 
+### Requirement: Rename the active saved thread
+The TUI SHALL support `/rename <new-name>` for the active saved thread, including an automatically named thread with zero turns. The new name SHALL follow the same rules as `/new <name>`. A rename SHALL keep the same conversation, prompt recall, usage, edit decisions, and selected context. It SHALL NOT add a turn, call the model, launch a command, or write a source file.
+
+#### Scenario: Give an automatically named thread a memorable name
+- **GIVEN** `/new` created `thread-7bd0095d6100` and the shared current-thread pointer still names it
+- **WHEN** the user enters `/rename flint-debug`
+- **THEN** the TUI stays in the same conversation and shows `flint-debug` as active; `/switch` and `/sessions` list it once and no longer list the old name
+- **AND** after restart, `ask --session flint-debug /session` shows the same history and context, and the shared pointer names `flint-debug`
+
+#### Scenario: Another terminal has switched elsewhere
+- **GIVEN** the TUI is still in `work` but the CLI has switched the shared pointer to `docs`
+- **WHEN** the TUI renames `work` to `flint-debug`
+- **THEN** the TUI stays in `flint-debug`, while the CLI's current thread remains `docs`
+
+#### Scenario: Prevent accidental replacement or loss
+- **WHEN** the target name is missing, invalid (such as `flint debug`), or already belongs to another saved thread in this repository
+- **THEN** the TUI explains the error and leaves both threads and the current-thread pointer unchanged
+- **WHEN** an idle user supplies the thread's own name
+- **THEN** the rename is a no-op
+
+#### Scenario: Rename only saved, settled work
+- **WHEN** the user tries `/rename flint-debug` in a temporary chat
+- **THEN** the TUI leaves it temporary and suggests `/switch flint-debug` with an unused name to save it
+- **WHEN** a request or write is in progress, edits await a decision, or the source revision is stale
+- **THEN** the rename is refused without losing the current transcript, pending work, or saved data
+
+#### Scenario: A stale writer saves under the old name
+- **GIVEN** another process opened `work` before the TUI successfully renamed it to `flint-debug`
+- **WHEN** that process attempts to save its old revision of `work`
+- **THEN** the store reports a conflict without recreating `work` or overwriting `flint-debug`
+
 ### Requirement: Explicit persistence
 A plain TUI launch SHALL start temporary, even if the CLI has a current thread. Selecting an unused name from a temporary conversation SHALL save that conversation under the name. Selecting an existing name SHALL NOT discard a nonempty temporary conversation or append it to the destination.
 

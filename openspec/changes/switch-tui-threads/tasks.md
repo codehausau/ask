@@ -25,3 +25,9 @@
 - [x] 4.1 Use a temporary state directory and mock provider for CLI `work`, TUI `work`, TUI `docs`, then CLI `work`. Assert turn order, thread isolation, exact file/skill selections, and one logical completion per submitted prompt.
 - [x] 4.2 Verify recall after reopening a CLI-created thread, switching, `/clear`, and `/new`. Assert no prompt leaks between threads and no assistant reply, local command, or generated summary appears in the composer history.
 - [x] 4.3 Run workspace typechecks and relevant Node and native Bun tests, including a TUI restart. Verify the documented `/sessions` and `/switch work` sequence against the packaged interfaces.
+
+## 5. Rename a saved thread
+
+- [ ] 5.1 Implement a revision-checked rename in the shared store, including legacy records, compaction backups, and conditional pointer updates. Test destination collisions, stale writers, interrupted moves, and repository isolation.
+- [ ] 5.2 Add TUI `/rename <new-name>` to local command handling, picker, help, and guide. Keep the transcript and context in place; handle unchanged names, temporary chats, invalid names, and busy or pending work.
+- [ ] 5.3 Test `/new` → `/rename flint-debug` → `/switch` for an empty thread, then rename a populated thread and resume it from the CLI after restart. Verify recall, selections, and usage survive; the old name disappears; and rename makes no provider calls or source edits.
