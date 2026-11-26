@@ -138,6 +138,23 @@ def main():
             assert not (cwd / "preload-executed").exists(), "repository preload executed"
             # Wait for the local write to finish updating the UI before quitting.
             wait_for(lambda: b"Applied updates" in output, "write confirmation")
+            # Naming a temporary conversation saves it. Switching away and
+            # back restores history, never a pending edit or a provider call.
+            os.write(master, b"/switch smoke-work\r")
+            wait_for(lambda: b"Thread: smoke-work" in output, "named conversation")
+            os.write(master, b"/switch smoke-other\r")
+            wait_for(lambda: b"Thread: smoke-other" in output, "empty second thread")
+            os.write(master, b"/sessions\r")
+            wait_for(lambda: b"smoke-work (1 turn)" in output, "shared thread listing")
+            output.clear()
+            os.write(master, b"/switch\r")
+            wait_for(lambda: b"Switch thread" in output and b"smoke-work" in output, "choose a saved thread")
+            os.write(master, b"smoke-work\r")
+            wait_for(lambda: b"Thread: smoke-work" in output, "resumed conversation")
+            os.write(master, b"/rename smoke-review\r")
+            wait_for(lambda: b"Renamed smoke-work to smoke-review" in output, "renamed conversation")
+            assert target.read_text() == "const x = 2;\n"
+            assert len(requests) == 3, "thread commands must never call the provider"
             # Choosing a theme saves it, writing only the user's global tui.json.
             os.write(master, b"/theme nord")
             wait_for(lambda: b"nord" in output, "theme picker")
@@ -146,6 +163,25 @@ def main():
             assert (saved.stat().st_mode & 0o777) == 0o600, oct(saved.stat().st_mode)
             os.write(master, b"/quit\r")
             wait_for(lambda: process.poll() is not None, "clean exit")
+            assert process.returncode == 0, process.returncode
+            # A fresh process starts temporary, but can resume the same saved turn.
+            selector.unregister(master)
+            os.close(master)
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 45, 140, 0, 0))
+            selector.register(master, selectors.EVENT_READ)
+            output.clear()
+            process = subprocess.Popen(process.args, cwd=cwd, env=env, stdin=slave,
+                                       stdout=slave, stderr=slave, start_new_session=True)
+            os.close(slave)
+            slave = None
+            wait_for(lambda: b"(temporary)" in output, "temporary conversation after restart")
+            os.write(master, b"/switch smoke-review\r")
+            wait_for(lambda: b"Thread: smoke-review" in output, "reopened renamed thread")
+            assert b"Update @sample.ts please" in output, "previous user turn missing"
+            assert len(requests) == 3, "loading history triggered a completion"
+            os.write(master, b"/quit\r")
+            wait_for(lambda: process.poll() is not None, "clean exit after restart")
             assert process.returncode == 0, process.returncode
         finally:
             if process is not None and process.poll() is None:
@@ -162,7 +198,7 @@ def main():
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-    print("Installed TUI: native startup, identical-body retries, reviewed apply, safe config, saved-theme fallback and clean exit passed")
+    print("Installed TUI: startup, retries, reviewed apply, config, saved theme, thread switching and restart passed")
 
 
 if __name__ == "__main__":

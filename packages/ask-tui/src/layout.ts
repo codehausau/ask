@@ -168,8 +168,9 @@ export function createChatLayout(renderer: CliRenderer, model: string, cwd: stri
   sidebarDivider.onMouseDragEnd = finishSidebarDrag;
   sidebarDivider.onMouseUp = finishSidebarDrag;
 
-  function refreshSummary(stats: TuiSessionStats, skillNames: readonly string[], pendingCount: number) {
+  function refreshSummary(stats: TuiSessionStats, skillNames: readonly string[], pendingCount: number, threadName: string | null) {
     layoutSidebar();
+    footerLeft.content = `${terminalField(threadName ?? "(temporary)")} · ${cwdPath}`;
     const number = (value: number | null) => value === null ? "unknown" : value.toLocaleString("en-US");
     const used = stats.lastInput !== null && stats.lastOutput !== null ? stats.lastInput + stats.lastOutput : null;
     const percentage = used !== null && stats.contextWindow !== null ? ` (${(used / stats.contextWindow * 100).toFixed(1)}%)` : "";

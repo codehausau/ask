@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { commitThread, emptySession, readCurrentSession, readThread } from "../src/session.ts";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -486,8 +488,9 @@ test("/switch makes a thread stick across invocations", async () => {
 
     // Switching again isolates the threads.
     await runCli(["/switch", "docs"], base);
-    assert.match(await runCli(["/session"], base), /no active thread/);
+    assert.match(await runCli(["/session"], base), /thread docs\s+0 turn\(s\)/);
     await runCli(["/switch", "review"], base);
+    assert.match(await runCli(["/switch"], base), /docs\s+0 turn/, "empty named threads remain discoverable after switching away");
     assert.match(await runCli(["/session"], base), /thread review\s+1 turn\(s\)/);
   } finally {
     await endpoint.close();
@@ -514,14 +517,14 @@ test("/sessions lists the threads and marks the active one", async () => {
     assert.doesNotMatch(listing, /\*\s+alpha/);
     // Listing calls nothing.
     const before = endpoint.requests.length;
-    await runCli(["/sessions"], base);
+    assert.equal(await runCli(["/switch"], base), listing);
     assert.equal(endpoint.requests.length, before);
   } finally {
     await endpoint.close();
   }
 });
 
-test("ASK_SESSION names a thread, and /switch is rejected without a name", async () => {
+test("ASK_SESSION names a thread, and /switch validates explicit names", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
   const base = { cwd, state, url: endpoint.url };
@@ -531,7 +534,6 @@ test("ASK_SESSION names a thread, and /switch is rejected without a name", async
     const output = await runCli(["/session"], { ...base, env: { ASK_SESSION: "envthread" } });
     assert.match(output, /thread envthread\s+1 turn\(s\)/);
 
-    await assert.rejects(() => runCli(["/switch"], base), /needs a thread name/);
     await assert.rejects(() => runCli(["/switch", "bad name"], base), /invalid thread name|needs a name/);
   } finally {
     await endpoint.close();
@@ -561,7 +563,7 @@ test("--session overrides ASK_SESSION=0, but --no-session always wins", async ()
   }
 });
 
-test("an expired thread starts fresh", async () => {
+test("explicit selection resumes idle threads; implicit lookups still expire", async () => {
   const endpoint = await stubEndpoint();
   const { cwd, state } = await workspace();
   const base = { cwd, state, url: endpoint.url };
@@ -570,6 +572,8 @@ test("an expired thread starts fresh", async () => {
     await runCli(["--session", "t6", "@widget.ts first"], base);
     // ASK_SESSION_TTL is in minutes; 0 would mean "never expire", so use a
     // tiny positive value that any stored turn is already older than.
+    const idle = { ...base, env: { ASK_SESSION_TTL: "0.0001" } };
+    assert.match(await runCli(["/session"], { ...idle, env: { ...idle.env, ASK_SESSION: "t6" } }), /no active thread/);
     await runCli(["--session", "t6", "second"], {
       ...base,
       env: { ASK_SESSION_TTL: "0.0001" },
@@ -577,12 +581,37 @@ test("an expired thread starts fresh", async () => {
 
     assert.deepEqual(
       endpoint.requests[1]!.messages.map((message) => message.role),
-      ["system", "user"],
-      "idle beyond the TTL, so no history",
+      ["system", "user", "assistant", "user"],
+      "an explicitly selected thread survives expiry",
     );
   } finally {
     await endpoint.close();
   }
+});
+
+test("CLI uses exact scoped selections and exclusions from the shared store", async () => {
+  const endpoint = await stubEndpoint();
+  const { cwd, state } = await workspace();
+  try {
+    execFileSync("git", ["init", "-q", cwd]);
+    const sub = path.join(cwd, "client");
+    await mkdir(sub); await mkdir(path.join(cwd, "lib"));
+    await writeFile(path.join(cwd, "lib/used.ts"), "CURRENT_FILE");
+    await writeFile(path.join(cwd, "lib/excluded.ts"), "EXCLUDED_CONTENT");
+    await writeFile(path.join(sub, "missing.ts.bak"), "WRONG_SUBSTITUTE");
+    const key = { scope: cwd, name: "work", env: { ASK_STATE_DIR: state } };
+    await commitThread(key, { ...emptySession(cwd, "work"), turns: [{
+      question: "first", answer: "one", at: new Date().toISOString(), refs: ["old.ts"], skills: ["removed"],
+    }], selection: { refs: ["lib", "missing.ts"], excluded: ["lib/excluded.ts"], skills: [] } }, null);
+    const output = await runCli(["--session", "work", "next"], { cwd: sub, state, url: endpoint.url });
+    assert.match(output, /dropped @missing.ts/);
+    const request = JSON.stringify(endpoint.requests[0]);
+    assert.match(request, /CURRENT_FILE/);
+    assert.doesNotMatch(request, /EXCLUDED_CONTENT|WRONG_SUBSTITUTE/);
+    assert.deepEqual((await readThread(key)).session?.selection?.refs, ["lib"]);
+    await runCli(["/switch", "work"], { cwd: sub, state, url: endpoint.url });
+    assert.equal(await readCurrentSession(cwd, key.env), "work");
+  } finally { await endpoint.close(); }
 });
 
 test("a redirected answer is byte-identical to what the model wrote", async () => {

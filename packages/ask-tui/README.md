@@ -445,13 +445,37 @@ Safety rules:
   names any files already written. Review your diffs and keep backups/commits.
 
 This initial TUI supports updates to existing files only. Use `ask /create` for
-new files. It has **in-memory history only** (separate from CLI sessions), no
-compaction, no streaming, no model tools, and no model-driven follow-ups.
+new files. The TUI starts temporary. `/sessions` lists saved threads in this
+repository. Enter `/switch` to browse them: **↑/↓** highlights a thread,
+**Enter** opens it, and **Esc** closes the picker. Typing `/switch work`
+directly resumes the same thread as `ask --session work`, or creates it if new.
+Switch to an unused name to save a temporary conversation. To open an existing
+thread instead, first save or discard nonempty temporary work. After selection,
+turns and context changes are saved locally; old answers have no Apply controls.
+Switches cannot apply pending edits: resolve them before switching.
+
+With the composer focused, press **Up** for your last prompt, then older prompts
+from this thread. **Down** moves forward and restores your original draft.
+Prompts rejected by the provider (including HTTP 401) are also recallable.
+They don't count as answered turns or get sent as history on the next request.
+Like successful prompts, they're saved only in named threads.
+Edit the recalled text and press Enter to submit. Arrows navigate an open
+picker first, and move between rows of multiline input before browsing history.
 `/clear` clears history, the visible transcript, pending edits and conversation
 usage counters, while keeping attachments, file exclusions, active skills and
-settings. `/new` also removes attachments, exclusions and skills. Both destroy
+settings. In a named thread `/clear` also clears saved history. `/new` creates
+and selects an empty saved thread with an automatic name; `/new work` gives it
+a name of your choice. It appears in `/switch` and `/sessions` immediately.
+The previous named thread stays intact; unsaved temporary work is discarded. Both commands destroy
 the cleared transcript's native renderables and keep the selected theme and sidebar
-width for the current run. `/context`
+width for the current run.
+
+To give the **current saved thread** a different name, enter `/rename flint-debug`.
+Its history, recall, and selected context stay with it. Use an unused name
+without spaces; the new name replaces the old one in both the TUI and the CLI.
+If the chat is still temporary, use `/switch flint-debug` to save it instead.
+
+`/context`
 opens the context manager; `/help` lists commands; `/quit` or Ctrl+D exits.
 Ctrl+C exits only when no text is selected; otherwise it copies the selection.
 Each submission resends the conversation history. When it no longer fits (see

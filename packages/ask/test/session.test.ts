@@ -69,7 +69,7 @@ test("sessions are keyed by scope and name", () => {
   assert.notEqual(a, b, "different repos get different threads");
   assert.notEqual(a, c, "named threads are separate");
   assert.equal(a, sessionPath({ scope: "/repo/one", name: "default", env }), "stable");
-  assert.match(a, /^\/tmp\/state\/sessions\/[0-9a-f]{16}\.json$/);
+  assert.match(a, /^\/tmp\/state\/sessions-v2\/[0-9a-f]{16}\.json$/);
 });
 
 test("a saved session round-trips and is owner-only", async () => {

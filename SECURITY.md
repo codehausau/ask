@@ -36,7 +36,7 @@ will *not* do.
 | Runtime/subprocesses | Node.js runtime spawns only hardened Git commands; shell completion and development/release tooling have their own executable dependencies | Node.js launcher also spawns Bun with isolated runtime configuration; the TUI uses native OpenTUI dependencies and shared Git helpers |
 | Attachment selection | Explicit references and `-f`; references can use the CLI's search resolution | Typed and pasted mentions must name an existing path or glob; search and attachment popups are local user actions |
 | Request inspection | `--dry-run` prints the exact JSON body; `--show-context` lists inputs without calling the API | Context/sidebar controls show selections; these CLI payload-preview flags are not TUI features |
-| Conversation storage | Disk-backed sessions for interactive runs or explicit `--session` | In-memory history only, separate from CLI sessions |
+| Conversation storage | Disk-backed sessions for interactive runs or explicit `--session` | Temporary until `/switch <name>` selects a shared thread or `/new` creates one |
 | Edit authorization | Explicit `/write <path>` or `/create <path>` invocation; `/diff` previews without writing | Model may propose edits to any eligible current attachment; explicit per-file review and apply are required |
 | Git undo requirement | `/write` requires a clean tracked file and local undo blob unless `--force` | Reviewed edits may replace dirty or untracked files without a Git undo copy |
 | Clipboard | No application clipboard read/write commands | Explicit user-triggered clipboard integration, described below |
@@ -211,10 +211,24 @@ the selected skills too. Skills cannot grant tools or bypass write validation.
 
 ### CLI disk sessions
 
+Named CLI and TUI conversations share private records under `sessions-v2` in the
+configured state directory. Upgrading reads legacy `sessions` on demand; newer
+versions take precedence. Downgrading cannot show newer turns. Explicit clear
+and reset also remove shadowed legacy history and compaction backups.
+Thread writes compare revisions under a short per-thread lock and publish by
+atomic rename. If a writer dies holding a lock, close writers before removing
+the reported `.lock` directory. Temporary TUI conversations are not saved.
+
+`/rename` holds both thread locks and the repository pointer lock. It publishes
+the new record and its compaction backup before retiring the old ones. If the
+process dies mid-rename, both names may remain. With writers stopped, clear any
+abandoned locks, inspect the two names with `ask --session <name> /session`, and
+check the backups before discarding a redundant copy.
+
 Interactive `ask` runs keep a conversation thread so follow-ups need no
 `@references`. Piped/scripted runs are one-shot unless `--session <name>` opts in.
 
-- **Location**: `$XDG_STATE_HOME/ask/sessions/<hash>.json` (or `ASK_STATE_DIR`),
+- **Location**: `$XDG_STATE_HOME/ask/sessions-v2/<hash>.json` (or `ASK_STATE_DIR`),
   outside repositories by default. Environment overrides can relocate storage.
   Session files use mode `0600`, created directories `0700`.
 - **Contents**: questions, `@refs` as typed, skill names, model answers and reported usage.
@@ -239,19 +253,20 @@ Interactive `ask` runs keep a conversation thread so follow-ups need no
 
 Sessions do not change the one-logical-completion policy or enable model tools.
 
-### TUI in-memory conversations
+### Temporary and named TUI conversations
 
 `ask-tui` retains resolved file/folder selections and re-reads their current contents
 for each submission. Contents are appended after the user message; prior file
-contents are not duplicated in history. Conversation history is only in memory
-and is not shared with CLI sessions.
+contents are not duplicated in history. Temporary conversations stay in memory;
+`/switch <name>` and `/new [name]` opt into the shared CLI store. Named threads save the current
+file, exclusion, and skill selection; restoring a thread never reactivates an edit.
 
 `/clear` clears history, pending edits, usage counters and the visible transcript
 while retaining attachments, exclusions, skills and settings. `/new` also clears
 attachments, exclusions and skills. Both destroy the transcript's native
 renderables, including old answers and diff panels, and clear selection. Theme
-and layout preferences remain selected. Unlike CLI `/new`, TUI `/new` does not
-archive a conversation to disk.
+and layout preferences remain selected. TUI `/new` creates a separate empty
+saved thread and leaves the prior saved thread under its original name.
 
 Footer/sidebar usage comes from provider-reported counts. Missing usage is not
 treated as zero and partial totals are labelled. Context-window capacity is

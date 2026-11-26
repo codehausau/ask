@@ -11,7 +11,7 @@ import { chatRefs, TuiChat } from "../src/chat.ts";
 import { mentionCandidates } from "@codehaus-au/ask/internal/refs";
 import { MAX_SKILL_BYTES, SkillResolutionError } from "@codehaus-au/ask/internal/skills";
 import { collectContext } from "@codehaus-au/ask/internal/context";
-import { DEFAULT_SESSION_MAX_TOKENS, estimateTokens } from "@codehaus-au/ask/internal/session";
+import { DEFAULT_SESSION_MAX_TOKENS, estimateTokens, readCurrentSession } from "@codehaus-au/ask/internal/session";
 import { dispatchCommand } from "../src/commands.ts";
 
 function block(target: string, search: string, replacement: string) {
@@ -81,6 +81,50 @@ test("response commands are inert and /apply only writes reviewed files, without
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
+test("switching is local; neither a pending proposal nor its approval can cross a thread boundary", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-thread-actions-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const env = { ASK_STATE_DIR: path.join(cwd, "state") };
+  await writeFile(path.join(cwd, "a.ts"), "old");
+  const { client, requests } = clientWith([{ text: block("a.ts", "old", "new") }]);
+  const chat = new TuiChat(client, { cwd, env });
+  for (const name of ["exec", "execFile", "spawn", "fork", "execSync", "execFileSync", "spawnSync"] as const) {
+    t.mock.method(childProcess, name, () => { assert.fail(`thread command launched ${name}`); });
+  }
+  syncBuiltinESMExports();
+  try {
+    await chat.switchThread("work");
+    const submitting = chat.submit("update @a.ts");
+    await assert.rejects(chat.renameThread("edited"), /current request/);
+    await assert.rejects(chat.switchThread("other"), /current request/);
+    await submitting;
+    assert.equal(chat.pendingCount, 1);
+    await assert.rejects(chat.renameThread("edited"), /pending edits/);
+    await assert.rejects(chat.switchThread("other"), /pending edits/);
+    chat.review();
+    await assert.rejects(chat.renameThread("edited"), /pending edits/);
+    await assert.rejects(chat.switchThread("other"), /pending edits/);
+    assert.equal(await readCurrentSession(cwd, env), "work");
+    const applying = chat.apply();
+    await assert.rejects(chat.renameThread("edited"), /current request/);
+    await assert.rejects(chat.switchThread("other"), /current request/);
+    await applying;
+    const stats = chat.sessionStats;
+    const turns = chat.savedTurns;
+    await chat.renameThread("edited");
+    assert.deepEqual(chat.sessionStats, stats);
+    assert.deepEqual(chat.savedTurns, turns);
+    await chat.switchThread("other"); await chat.switchThread("edited");
+    assert.match(await chat.threads(), /\* edited/);
+    assert.equal(chat.pendingCount, 0); assert.deepEqual(chat.pendingReviews, []);
+    await assert.rejects(chat.apply(), /No pending edits/);
+    assert.match(chat.savedTurns[0]!.answer, /<update/);
+    assert.deepEqual(chat.prompts, ["update @a.ts"]);
+    assert.equal(requests.length, 1);
+    assert.equal(await readFile(path.join(cwd, "a.ts"), "utf8"), "new");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("submission publishes validated attachment context before requesting a completion", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ask-tui-context-ready-"));
   try {
@@ -133,7 +177,7 @@ test("session stats track provider usage honestly, files, and reset without mode
     chat.detach("a.ts");
     assert.deepEqual(chat.sessionStats.files, []);
     assert.equal(requests.length, 3);
-    chat.reset();
+    await chat.newThread();
     assert.equal(chat.lastAnswer, null);
     assert.deepEqual({ ...chat.sessionStats }, {
       cwd, turns: 0, contextWindow: 1000, lastInput: null, lastOutput: null,
@@ -175,7 +219,7 @@ test("TUI skills are explicitly selected, composed in system instructions, and r
     await chat.submit("Use style only.");
     assert.doesNotMatch(String(requests[2]!.messages[0]!.content), /REVIEW_BODY/);
     assert.match(String(requests[2]!.messages[0]!.content), /STYLE_BODY/);
-    chat.reset();
+    await chat.newThread();
     assert.deepEqual(chat.activeSkillNames, []);
     assert.equal(requests.length, 3);
   } finally { await rm(cwd, { recursive: true, force: true }); }
@@ -286,7 +330,7 @@ test("individual files can be excluded from attached folders, restored, and expl
     assert.doesNotMatch(String(requests[5]!.messages.at(-1)!.content), /<file /);
     assert.throws(() => chat.detach("not-attached.ts"), /Not attached/);
     assert.equal(await readFile(path.join(cwd, "src", "a.ts"), "utf8"), "EXCLUDED_CONTENT");
-    chat.reset();
+    await chat.newThread();
     assert.deepEqual(chat.excludedFilePaths, []);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
@@ -396,7 +440,7 @@ test("ordinary chat retains attachments and allows unsolicited, user-approved up
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test("pending proposals must be resolved; reject and reset never ask or write", async () => {
+test("pending proposals must be resolved; reject and new thread never ask or write source files", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ask-tui-"));
   try {
     await writeFile(path.join(cwd, "a.ts"), "old\n");
@@ -413,7 +457,7 @@ test("pending proposals must be resolved; reject and reset never ask or write", 
     assert.equal(chat.pendingCount, 0);
     chat.detach("a.ts");
     assert.deepEqual(chat.attachmentPaths, []);
-    chat.reset();
+    await chat.newThread();
     assert.equal(requests.length, 1);
     assert.equal(await readFile(path.join(cwd, "a.ts"), "utf8"), "old\n");
   } finally { await rm(cwd, { recursive: true, force: true }); }

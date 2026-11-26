@@ -33,7 +33,8 @@ instructions files, are added to the system prompt; --no-instructions skips them
 One logical completion per submission; no model tools or agent loop.
 Up to two SDK retries resend the same request body after transient failures.
 Mention @files or @folders anywhere. Suggested updates require review and /apply.
-History is in memory for this TUI only. Ctrl+C copies a selection, otherwise exits.
+History is temporary until /switch <name> saves or opens a shared CLI thread.
+Ctrl+C copies a selection, otherwise exits.
 Ctrl+D always exits. /help lists commands.
 --skill selects instructions for this chat; repeat to compose skills.
 --list-skills lists discovered skills offline; no key or terminal required.
@@ -141,7 +142,7 @@ async function main() {
     apiKey, baseURL, organization: settings.endpoint.organization, project: settings.endpoint.project,
     timeoutMs, signal: lifetime.signal,
   }), {
-    cwd, model, baseURL, system: settings.system ?? "",
+    cwd, scope: loaded.projectRoot, model, baseURL, system: settings.system ?? "",
     maxTokens: settings.maxTokens, temperature: settings.temperature,
     contextWindow: settings.tui.contextWindow,
     skillRoots: skillSearchPaths(cwd, process.env, values.config),
