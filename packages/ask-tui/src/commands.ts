@@ -16,7 +16,8 @@ Transient failures may retry the same request up to twice, without model-driven 
 /theme [name]  choose a theme; it is saved as your default in tui.json
 /switch  choose a saved thread    /switch <name>  save or resume by name    /sessions  list threads
 /clear  clear conversation and pending edits; keep attachments and skills
-/new [name]  create and select an empty saved thread    /help    /quit
+/new [name]  create an empty saved thread    /rename <new-name>  rename this saved thread
+/help    /quit
 Enter selects an open mention, otherwise sends · Shift+Enter inserts a newline
 Type / for searchable commands · /context, /detach and /unskill open management popups
 Ctrl+C copies highlighted text (OSC52); without a selection it exits
@@ -48,6 +49,12 @@ export async function dispatchCommand(text: string, chat: TuiChat, actions: {
     actions.clear();
     actions.restored?.();
     actions.addText(`Thread: ${terminalField(chat.threadName!)}\nAttachments: ${chat.attachmentPaths.map(terminalField).join(", ") || "none"}\nExcluded: ${chat.excludedFilePaths.map(terminalField).join(", ") || "none"}\nSkills: ${chat.activeSkillNames.map(terminalField).join(", ") || "none"}`);
+  }
+  else if (/^\/rename(?:\s|$)/.test(text)) {
+    const name = text.slice(7).trim();
+    const previous = chat.threadName;
+    await chat.renameThread(name);
+    actions.addText(previous === name ? `Already named ${terminalField(name)}.` : `Renamed ${terminalField(previous!)} to ${terminalField(name)}.`);
   }
   else if (text === "/clear") {
     await chat.clearConversation(); actions.clear();

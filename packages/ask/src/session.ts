@@ -169,17 +169,24 @@ export interface ThreadRecord { session: Session | null; revision: string | null
 function digest(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException)?.code === "ENOENT"; }
 
+async function optionalText(file: string): Promise<string | null> {
+  try { return await readFile(file, "utf8"); } catch (error) { if (!missing(error)) throw error; return null; }
+}
+
+function decodeRecord(raw: string, key: SessionKey, version?: number): Session {
+  let record: unknown;
+  try { record = JSON.parse(raw); } catch { /* handled below */ }
+  if (!isSession(record) || (version !== undefined && record.version !== version) || record.scope !== key.scope || record.name !== key.name) {
+    throw new Error(`Cannot open thread ${JSON.stringify(key.name)}: invalid or unsupported session record.`);
+  }
+  return record;
+}
+
 /** Only absence means "new". Never fall through from a broken v2 file to stale v1 data. */
 export async function readThread(key: SessionKey): Promise<ThreadRecord> {
   for (const [file, version] of [[sessionPath(key), 2], [legacyPath(key), 1]] as const) {
-    let raw: string;
-    try { raw = await readFile(file, "utf8"); } catch (error) { if (missing(error)) continue; throw error; }
-    let record: unknown;
-    try { record = JSON.parse(raw); } catch { /* handled below */ }
-    if (!isSession(record) || record.version !== version || record.scope !== key.scope || record.name !== key.name) {
-      throw new Error(`Cannot open thread ${JSON.stringify(key.name)}: invalid or unsupported session record.`);
-    }
-    return { session: record, revision: digest(raw) };
+    const raw = await optionalText(file);
+    if (raw !== null) return { session: decodeRecord(raw, key, version), revision: digest(raw) };
   }
   return { session: null, revision: null };
 }
@@ -228,15 +235,18 @@ async function atomicWrite(file: string, text: string): Promise<void> {
   } finally { await rm(temporary, { force: true }); }
 }
 
-async function locked<T>(key: SessionKey, action: () => Promise<T>): Promise<T> {
-  const file = sessionPath(key);
+async function lockFile<T>(file: string, label: string, action: () => Promise<T>): Promise<T> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const lock = `${file}.lock`;
   try { await mkdir(lock, { mode: 0o700 }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    throw new Error(`Thread ${JSON.stringify(key.name)} is locked. Retry after the other writer finishes. Lock: ${lock}`);
+    throw new Error(`${label} is locked. Retry after the other writer finishes. Lock: ${lock}`);
   }
   try { return await action(); } finally { await rm(lock, { recursive: true }); }
+}
+
+function locked<T>(key: SessionKey, action: () => Promise<T>): Promise<T> {
+  return lockFile(sessionPath(key), `Thread ${JSON.stringify(key.name)}`, action);
 }
 
 function checkRevision(current: ThreadRecord, expected: string | null): void {
@@ -245,7 +255,7 @@ function checkRevision(current: ThreadRecord, expected: string | null): void {
 
 /** Compare under the lock, never across a model request. */
 export async function commitThread(key: SessionKey, session: Session, expected: string | null,
-  operation?: "compact" | "clear"): Promise<string> {
+  operation?: "compact" | "clear" | "select"): Promise<string> {
   return locked(key, async () => {
     const current = await readThread(key);
     checkRevision(current, expected);
@@ -257,6 +267,12 @@ export async function commitThread(key: SessionKey, session: Session, expected: 
     if (operation === "clear") {
       await rm(legacyPath(key), { force: true });
       await removeBackups(key);
+    }
+    if (operation === "select") {
+      // Keep the thread lock through selection: a concurrent rename must not
+      // retire this name between the record write and the pointer write.
+      try { await writeCurrentSession(key.scope, key.name, key.env); }
+      catch (error) { throw new Error(`Thread ${key.name} was saved, but could not be selected: ${String(error)}`); }
     }
     return digest(raw);
   });
@@ -283,11 +299,69 @@ async function removeBackups(key: SessionKey): Promise<void> {
   await rm(sessionBackupPath(key), { force: true });
 }
 
-async function removeThreadFiles(key: SessionKey): Promise<void> {
-  // Delete v1 first: interruption must never expose a shadowed legacy history.
-  await rm(legacyPath(key), { force: true });
+async function removeThreadFiles(key: SessionKey, version = SESSION_VERSION): Promise<void> {
+  // Retire the authoritative primary last. Never expose a shadowed v1 history.
+  if (version !== 1) await rm(legacyPath(key), { force: true });
   await removeBackups(key);
-  await rm(sessionPath(key), { force: true });
+  await rm(version === 1 ? legacyPath(key) : sessionPath(key), { force: true });
+}
+
+async function effectiveBackup(key: SessionKey) {
+  for (const file of [sessionBackupPath(key), legacyPath(key).replace(/\.json$/, ".pre-compact.json")]) {
+    const raw = await optionalText(file);
+    if (raw !== null) return { file, raw, session: decodeRecord(raw, key) };
+  }
+  return null;
+}
+
+/** Change the storage key, preserving the conversation and its current pre-compaction snapshot. */
+export async function renameThread(key: SessionKey, name: string, expected: string): Promise<{ session: Session; revision: string }> {
+  if (!isValidSessionName(name)) throw new Error("Usage: /rename <new-name> (1–64 letters, digits, dots, dashes or underscores).");
+  return locked(key, async () => {
+    const current = await readThread(key);
+    checkRevision(current, expected);
+    const source = current.session;
+    if (!source) throw new Error("No saved thread to rename.");
+    if (name === key.name) return { session: source, revision: expected };
+
+    const target = { ...key, name };
+    return locked(target, async () => {
+      if ((await readThread(target)).session || await effectiveBackup(target)) throw new Error(`Thread ${name} already exists. Choose an unused name.`);
+      const backup = await effectiveBackup(key);
+      const session = { ...source, name, version: SESSION_VERSION };
+      const raw = JSON.stringify(session, null, 2) + "\n";
+      const pointer = currentPointerPath(key.scope, key.env);
+      return lockFile(pointer, "Current-thread pointer", async () => {
+        const selected = (await optionalText(pointer))?.trim() === key.name;
+        let copiedBackup = false, movedPointer = false, retiring = false;
+        // Publish the complete destination before touching the source. Even a
+        // process kill leaves at least one complete copy and a usable pointer.
+        await atomicWrite(sessionPath(target), raw);
+        try {
+          if (backup) {
+            await backupSession({ ...backup.session, version: SESSION_VERSION, name }, key.env);
+            copiedBackup = true;
+          }
+          if (selected) { await atomicWrite(pointer, `${name}\n`); movedPointer = true; }
+          retiring = true;
+          await removeThreadFiles(key, source.version);
+        } catch (error) {
+          // Source primary is removed last. Restore its effective snapshot and
+          // pointer before relinquishing the recovery copy at the destination.
+          try {
+            if (retiring && backup) await atomicWrite(backup.file, backup.raw);
+            if (movedPointer) await atomicWrite(pointer, `${key.name}\n`);
+            if (copiedBackup) await rm(sessionBackupPath(target));
+            await rm(sessionPath(target));
+          } catch (rollback) {
+            throw new Error(`Rename interrupted; inspect both ${key.name} and ${name} before retrying: ${String(error)}; recovery: ${String(rollback)}`);
+          }
+          throw error;
+        }
+        return { session, revision: digest(raw) };
+      });
+    });
+  });
 }
 
 export async function resetSession(key: SessionKey, expected?: string | null): Promise<boolean> {
@@ -578,14 +652,15 @@ export async function writeCurrentSession(
     throw new Error(`invalid thread name "${name}": use letters, digits, dot, dash, underscore`);
   }
   const file = currentPointerPath(scope, env);
-  await atomicWrite(file, `${name}\n`);
+  await lockFile(file, "Current-thread pointer", () => atomicWrite(file, `${name}\n`));
 }
 
 export async function clearCurrentSession(
   scope: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  await rm(currentPointerPath(scope, env), { force: true });
+  const file = currentPointerPath(scope, env);
+  await lockFile(file, "Current-thread pointer", () => rm(file, { force: true }));
 }
 
 /**

@@ -151,6 +151,8 @@ def main():
             wait_for(lambda: b"Switch thread" in output and b"smoke-work" in output, "choose a saved thread")
             os.write(master, b"smoke-work\r")
             wait_for(lambda: b"Thread: smoke-work" in output, "resumed conversation")
+            os.write(master, b"/rename smoke-review\r")
+            wait_for(lambda: b"Renamed smoke-work to smoke-review" in output, "renamed conversation")
             assert target.read_text() == "const x = 2;\n"
             assert len(requests) == 3, "thread commands must never call the provider"
             # Choosing a theme saves it, writing only the user's global tui.json.
@@ -174,8 +176,8 @@ def main():
             os.close(slave)
             slave = None
             wait_for(lambda: b"(temporary)" in output, "temporary conversation after restart")
-            os.write(master, b"/switch smoke-work\r")
-            wait_for(lambda: b"Thread: smoke-work" in output, "reopened saved thread")
+            os.write(master, b"/switch smoke-review\r")
+            wait_for(lambda: b"Thread: smoke-review" in output, "reopened renamed thread")
             assert b"Update @sample.ts please" in output, "previous user turn missing"
             assert len(requests) == 3, "loading history triggered a completion"
             os.write(master, b"/quit\r")

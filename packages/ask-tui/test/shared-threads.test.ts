@@ -19,7 +19,8 @@ test("CLI/TUI handoff survives restart, context changes, and conflicts without a
     let raw = ""; for await (const chunk of req) raw += chunk;
     requests.push(JSON.parse(raw) as OneShotRequest);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ model: "stub", choices: [{ finish_reason: "stop", message: { content: `answer ${requests.length}` } }] }));
+    res.end(JSON.stringify({ model: "stub", usage: { prompt_tokens: 17, completion_tokens: 3 },
+      choices: [{ finish_reason: "stop", message: { content: `answer ${requests.length}` } }] }));
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -62,12 +63,29 @@ test("CLI/TUI handoff survives restart, context changes, and conflicts without a
   await assert.rejects(restarted.switchThread("broken"), /invalid or unsupported/);
   assert.equal(await readCurrentSession(cwd, env), "work");
   await ask("--session", "work", "concurrent");
+  await assert.rejects(restarted.renameThread("raced"), /changed/);
   const conflict = await restarted.submit("unsaved answer");
   assert.match(conflict.saveError!, /changed/);
   assert.equal(restarted.lastAnswer, "answer 6");
   assert.equal((await readThread({ scope: cwd, env, name: "work" })).session!.turns.at(-1)!.question, "concurrent");
   await restarted.switchThread("recovered");
   assert.equal(restarted.prompts.at(-1), "unsaved answer");
+  await restarted.attach("a.ts");
+  const beforeRename = restarted.savedTurns;
+  await restarted.renameThread("flint-debug");
+  assert.deepEqual(restarted.savedTurns, beforeRename);
+  assert.equal((await readThread({ scope: cwd, env, name: "recovered" })).session, null);
+  const report = await ask("--session", "flint-debug", "/session");
+  assert.match(report, /unsaved answer/); assert.match(report, /attachments: @a\.ts/);
+  assert.match(report, new RegExp(`spent\\s+${beforeRename.length * 17} in / ${beforeRename.length * 3} out`));
+  assert.equal(requests.length, 6, "rename and CLI inspection never call the provider");
+  const followUp = await restarted.submit("continue after rename");
+  assert.equal(followUp.saveError, undefined);
+  const reloaded = open();
+  await reloaded.switchThread("flint-debug");
+  assert.deepEqual(reloaded.prompts, restarted.prompts);
+  assert.equal(reloaded.prompts.at(-1), "continue after rename");
+  assert.deepEqual(reloaded.attachmentPaths, ["a.ts"]);
   await restarted.newThread();
   assert.deepEqual(restarted.prompts, []);
   const fresh = restarted.threadName;
@@ -77,5 +95,5 @@ test("CLI/TUI handoff survives restart, context changes, and conflicts without a
   await restarted.switchThread("docs");
   await restarted.clearConversation();
   assert.deepEqual((await readThread({ scope: cwd, name: "docs", env })).session?.turns, []);
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 7);
 });

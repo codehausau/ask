@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
 import {
   appendTurn, applyCompaction, archiveSession, clearSession, commitThread, dropOldestTurns, emptySession,
-  listSessions, readThread, rememberFailedPrompt, resetSession, sessionMessages, sessionPath, sessionPrompts,
+  backupSession, listSessions, readCurrentSession, readThread, rememberFailedPrompt, renameThread, resetSession,
+  sessionBackupPath, sessionMessages, sessionPath, sessionPrompts, writeCurrentSession,
 } from "../src/session.ts";
 
 async function fixture(t: TestContext) {
@@ -68,6 +69,68 @@ test("competing revisions and an abandoned staging file cannot overwrite a commi
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
   await assert.rejects(commitThread(key, thread, r), /changed/);
   assert.deepEqual((await readThread(key)).session?.turns, []);
+});
+
+test("rename migrates a legacy thread and its backup, updates the pointer and rejects a stale writer", async t => {
+  const { key, legacy, thread } = await fixture(t);
+  const target = { ...key, name: "flint-debug" };
+  const unrelated = { ...target, scope: path.join(key.scope, "other-project") };
+  const other = emptySession(unrelated.scope, unrelated.name);
+  await commitThread(unrelated, other, null);
+  const backup = { ...thread, version: 1 };
+  const compacted = applyCompaction(backup, "summary");
+  const oldBackup = legacy.replace(".json", ".pre-compact.json");
+  await writeFile(legacy, JSON.stringify({ ...compacted, version: 1 }));
+  await writeFile(oldBackup, JSON.stringify(backup));
+  await writeCurrentSession(key.scope, key.name, key.env);
+  const { revision } = await readThread(key);
+  assert.ok(revision);
+  const renamed = await renameThread(key, target.name, revision);
+  assert.deepEqual(renamed.session, { ...compacted, version: 2, name: target.name });
+  assert.deepEqual(await readThread(target), renamed);
+  assert.deepEqual((await listSessions(key.scope, key.env)).map(t => t.name), [target.name]);
+  assert.equal(await readCurrentSession(key.scope, key.env), target.name);
+  assert.deepEqual(JSON.parse(await readFile(sessionBackupPath(target), "utf8")), { ...backup, version: 2, name: target.name });
+  assert.deepEqual((await readThread(unrelated)).session, other);
+  await assert.rejects(stat(oldBackup), { code: "ENOENT" });
+  await assert.rejects(commitThread(key, thread, revision), /changed/);
+  assert.equal((await readThread(key)).session, null);
+});
+
+test("rename refuses collisions and stale revisions without taking another terminal's current selection", async t => {
+  const { key, thread } = await fixture(t);
+  const docs = { ...key, name: "docs" };
+  const revision = await commitThread(key, thread, null, "select");
+  await commitThread(docs, emptySession(docs.scope, docs.name), null, "select");
+  const before = await readThread(docs);
+  for (const invalid of ["", "flint debug", "../docs"]) await assert.rejects(renameThread(key, invalid, revision), /Usage/);
+  await assert.rejects(renameThread(key, docs.name, revision), /already exists/);
+  assert.deepEqual(await readThread(docs), before);
+  assert.deepEqual(await renameThread(key, key.name, revision), await readThread(key));
+  const newer = await commitThread(key, rememberFailedPrompt(thread, "retry me"), revision);
+  await assert.rejects(renameThread(key, "renamed", revision), /changed/);
+  assert.equal((await readThread({ ...key, name: "renamed" })).session, null);
+  await renameThread(key, "renamed", newer);
+  assert.equal(await readCurrentSession(key.scope, key.env), docs.name);
+});
+
+test("failure retiring the source rolls back a published destination and pointer; a retry succeeds", async t => {
+  const { key, legacy, thread } = await fixture(t);
+  const target = { ...key, name: "renamed" };
+  const revision = await commitThread(key, thread, null, "select");
+  await backupSession(thread, key.env);
+  // The v2 primary shadows this unusable v1 entry. Failure to remove it
+  // happens after destination + backup publication, not during validation.
+  await mkdir(legacy);
+  await assert.rejects(renameThread(key, target.name, revision));
+  assert.deepEqual(await readThread(key), { session: thread, revision });
+  assert.deepEqual(JSON.parse(await readFile(sessionBackupPath(key), "utf8")), thread);
+  assert.equal(await readCurrentSession(key.scope, key.env), key.name);
+  assert.equal((await readThread(target)).session, null);
+  await assert.rejects(stat(sessionBackupPath(target)), { code: "ENOENT" });
+  await rm(legacy, { recursive: true });
+  await renameThread(key, target.name, revision);
+  assert.equal((await readThread(key)).session, null);
 });
 
 test("clear, archive and reset never resurrect legacy copies or backups", async t => {

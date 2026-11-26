@@ -15,6 +15,7 @@ export const SLASH_COMMANDS = [
   { value: "/new", description: "Create an empty saved thread (optional name)" },
   { value: "/sessions", description: "List saved threads for this project" },
   { value: "/switch", description: "Choose a saved thread or enter a new name" },
+  { value: "/rename", description: "Rename this saved thread" },
   { value: "/help", description: "Show commands and keyboard shortcuts" },
   { value: "/quit", description: "Exit the TUI" },
   { value: "/exit", description: "Exit the TUI (alias of /quit)" },

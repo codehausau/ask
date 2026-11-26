@@ -84,7 +84,6 @@ import {
   isValidSessionName,
   listSessions,
   resolveSessionName,
-  writeCurrentSession,
   commitThread, emptySession, readThread, scopedPath, sessionBackupPath,
   buildCompactionPrompt,
   COMPACT_SYSTEM,
@@ -414,7 +413,7 @@ function printSession(session: Session | null, file: string, paint: Palette): vo
   );
 
   let total = 0;
-  if (session.context) {
+  if (session.context || session.selection) {
     process.stdout.write(
       `attachments: ${sessionRefs(session).map((ref) => `@${terminalField(ref)}`).join(" ") || "none"}\n` +
       `skills: ${sessionSkills(session).map(terminalField).join(", ") || "none"}\n`,
@@ -806,8 +805,7 @@ async function main(argv: string[]): Promise<number> {
     }
     const key = { scope, name: switchTo };
     const { session: target, revision } = await readThread(key);
-    await commitThread(key, target ? { ...target, updatedAt: new Date().toISOString() } : emptySession(scope, switchTo), revision);
-    await writeCurrentSession(scope, switchTo);
+    await commitThread(key, target ? { ...target, updatedAt: new Date().toISOString() } : emptySession(scope, switchTo), revision, "select");
     status.note(
       target
         ? `-- switched to thread ${switchTo} (${target.turns.length} turn(s))`

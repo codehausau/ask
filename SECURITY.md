@@ -219,6 +219,12 @@ Thread writes compare revisions under a short per-thread lock and publish by
 atomic rename. If a writer dies holding a lock, close writers before removing
 the reported `.lock` directory. Temporary TUI conversations are not saved.
 
+`/rename` holds both thread locks and the repository pointer lock. It publishes
+the new record and its compaction backup before retiring the old ones. If the
+process dies mid-rename, both names may remain. With writers stopped, clear any
+abandoned locks, inspect the two names with `ask --session <name> /session`, and
+check the backups before discarding a redundant copy.
+
 Interactive `ask` runs keep a conversation thread so follow-ups need no
 `@references`. Piped/scripted runs are one-shot unless `--session <name>` opts in.
 

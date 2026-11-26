@@ -11,7 +11,7 @@ import { hasGlobMagic, resolveRef, type Resolution } from "@codehaus-au/ask/inte
 import {
   commitThread, DEFAULT_SESSION_MAX_TOKENS, emptySession, estimateTokens, isValidSessionName,
   dropOldestTurns, listSessions, readThread, rememberFailedPrompt, scopedPath, sessionMessages, sessionPrompts,
-  sessionRefs, sessionSkills, writeCurrentSession,
+  renameThread as renameSavedThread, sessionRefs, sessionSkills,
   type Session, type SessionTurn, type ThreadSelection,
 } from "@codehaus-au/ask/internal/session";
 import { chatRefs } from "./mentions.ts";
@@ -154,6 +154,20 @@ export class TuiChat {
   switchThread(name: string) { return this.openThread("/switch", name); }
   newThread(name = `thread-${randomUUID().slice(-12)}`) { return this.openThread("/new", name); }
 
+  async renameThread(name: string): Promise<void> {
+    if (!isValidSessionName(name)) throw new Error("Usage: /rename <new-name> (letters, digits, dot, dash, underscore; 1–64 characters).");
+    if (this.busy) throw new Error("Finish the current request or write before renaming.");
+    if (this.pending.length) throw new Error("Resolve pending edits before renaming.");
+    if (!this.named || !this.revision) throw new Error(`This chat is temporary. Use /switch ${name} with an unused name to save it.`);
+    if (this.unsaved) throw new Error("This thread has unsaved changes. Use /switch with an unused name to keep them.");
+    this.busy = true;
+    try {
+      const { session, revision } = await renameSavedThread(this.key(this.record.name), name, this.revision);
+      this.record = session;
+      this.revision = revision;
+    } finally { this.busy = false; }
+  }
+
   private async openThread(command: "/switch" | "/new", name: string): Promise<void> {
     if (!isValidSessionName(name)) throw new Error(`Usage: ${command} <thread-name> (letters, digits, dot, dash, underscore; 1–64 characters).`);
     if (this.busy) throw new Error("Finish the current request or write before changing threads.");
@@ -170,9 +184,7 @@ export class TuiChat {
       }
       const next = { ...(destination.session ?? (carry ? { ...this.record, selection: this.selection() } : emptySession(this.scope, name))),
         name, updatedAt: new Date().toISOString() };
-      const revision = await commitThread(key, next, destination.revision);
-      try { await writeCurrentSession(this.scope, name, key.env); }
-      catch (error) { throw new Error(`Thread ${name} was saved, but could not be selected: ${String(error)}`); }
+      const revision = await commitThread(key, next, destination.revision, "select");
       this.resetMemory();
       this.record = next; this.named = true; this.revision = revision; this.unsaved = false;
       this.attachments = sessionRefs(next).map(p => path.resolve(this.scope, p));

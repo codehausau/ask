@@ -214,6 +214,40 @@ test("/new creates a selectable empty thread before the first message and never 
   assert.equal(calls, 0);
 });
 
+test("/new → /rename → /switch lists the same empty thread under its new name only", async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ask-rename-picker-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  let calls = 0;
+  const client: ChatClient = { chat: { completions: { async create() { calls++; throw new Error("unexpected request"); } } } };
+  const chat = new TuiChat(client, { cwd, env: { ASK_STATE_DIR: path.join(cwd, "state") } });
+  const setup = await createTestRenderer({ width: 110, height: 38, kittyKeyboard: true });
+  t.after(() => setup.dispose());
+  const ui = mountChatUI(setup.renderer, chat, "stub");
+  const command = async (text: string) => {
+    ui.input.setText(text); ui.input.gotoBufferEnd(); setup.mockInput.pressEnter();
+    await waitUntilIdle(ui); await setup.flush();
+  };
+  await command("/rename flint-debug");
+  assert.equal(chat.threadName, null);
+  assert.match(setup.captureCharFrame(), /\/switch flint-debug/);
+  await command("/new");
+  const generated = chat.threadName;
+  assert.ok(generated);
+  const transcript = [...ui.transcript.getChildren()];
+  await command("/rename flint debug");
+  assert.equal(chat.threadName, generated);
+  assert.match(setup.captureCharFrame(), /Usage: \/rename/);
+  await command("/rename flint-debug");
+  assert.equal(chat.threadName, "flint-debug");
+  assert.ok(transcript.every(node => !node.isDestroyed), "renaming does not clear or replay the transcript");
+  assert.equal(chat.sessionStats.turns, 0);
+  await command("/switch");
+  const rows = popupRows(ui.picker).chunks.map(c => c.text).join("");
+  assert.match(rows, /flint-debug\s+0 turns · current/);
+  assert.ok(!rows.includes(generated));
+  assert.equal(calls, 0);
+});
+
 for (const opener of ["@", "/attach "]) {
   test(`file discovery is lazy, single-flight and cached when opened with ${opener}`, async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "ask-tui-lazy-index-"));

@@ -28,6 +28,6 @@
 
 ## 5. Rename a saved thread
 
-- [ ] 5.1 Implement a revision-checked rename in the shared store, including legacy records, compaction backups, and conditional pointer updates. Test destination collisions, stale writers, interrupted moves, and repository isolation.
-- [ ] 5.2 Add TUI `/rename <new-name>` to local command handling, picker, help, and guide. Keep the transcript and context in place; handle unchanged names, temporary chats, invalid names, and busy or pending work.
-- [ ] 5.3 Test `/new` → `/rename flint-debug` → `/switch` for an empty thread, then rename a populated thread and resume it from the CLI after restart. Verify recall, selections, and usage survive; the old name disappears; and rename makes no provider calls or source edits.
+- [x] 5.1 Implement a revision-checked rename in the shared store, including legacy records, compaction backups, and conditional pointer updates. Test destination collisions, stale writers, interrupted moves, and repository isolation.
+- [x] 5.2 Add TUI `/rename <new-name>` to local command handling, picker, help, and guide. Keep the transcript and context in place; handle unchanged names, temporary chats, invalid names, and busy or pending work.
+- [x] 5.3 Test `/new` → `/rename flint-debug` → `/switch` for an empty thread, then rename a populated thread and resume it from the CLI after restart. Verify recall, selections, and usage survive; the old name disappears; and rename makes no provider calls or source edits.

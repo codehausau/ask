@@ -468,7 +468,14 @@ and selects an empty saved thread with an automatic name; `/new work` gives it
 a name of your choice. It appears in `/switch` and `/sessions` immediately.
 The previous named thread stays intact; unsaved temporary work is discarded. Both commands destroy
 the cleared transcript's native renderables and keep the selected theme and sidebar
-width for the current run. `/context`
+width for the current run.
+
+To give the **current saved thread** a different name, enter `/rename flint-debug`.
+Its history, recall, and selected context stay with it. Use an unused name
+without spaces; the new name replaces the old one in both the TUI and the CLI.
+If the chat is still temporary, use `/switch flint-debug` to save it instead.
+
+`/context`
 opens the context manager; `/help` lists commands; `/quit` or Ctrl+D exits.
 Ctrl+C exits only when no text is selected; otherwise it copies the selection.
 Each submission resends the conversation history. When it no longer fits (see
